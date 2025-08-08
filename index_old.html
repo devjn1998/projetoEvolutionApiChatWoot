@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel Administrativo - Botão Webhook</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Painel Principal -->
+    <div class="main-panel" id="mainPanel">
+        <div class="container">
+            <div class="card">
+                <div class="header">
+                    <h1>Painel Administrativo</h1>
+                    <p>Gerencie seus workflows e agentes de forma centralizada</p>
+                </div>
+                
+                <div class="quick-actions">
+                    <div class="action-card">
+                        <div class="action-icon">🤖</div>
+                        <div class="action-content">
+                            <h3>Gerenciar Workflows</h3>
+                            <p>Visualize e edite todos os workflows e agentes</p>
+                            <button class="btn btn-primary" onclick="showWorkflowsPanel()">
+                                Acessar Gerenciamento
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="action-card">
+                        <div class="action-icon">⚡</div>
+                        <div class="action-content">
+                            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px;">
+                                
+                                <h3>Criar Agente</h3>
+                                <p>Digite o nome do novo agente</p>
+                                <div class="create-agent-form">
+                                    <input 
+                                        type="text" 
+                                        id="newAgentName" 
+                                        class="agent-name-input" 
+                                        placeholder="Nome do agente..."
+                                        maxlength="50"
+                                    >
+                                    <button id="createAgentButton" class="btn-create-agent">
+                                        <span class="button-text">Criar Agente</span>
+                                        <div class="loading-spinner" id="createAgentSpinner"></div>
+                                    </button>
+                                    
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="status-container">
+                    <div id="statusMessage" class="status-message"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Painel de Gerenciamento de Workflows -->
+    <div class="workflows-panel" id="workflowsPanel" style="display: none;">
+        <div class="container">
+            <div class="card">
+                <div class="header">
+                    <h1>🗂️ Gerenciamento de Workflows</h1>
+                    <p>Visualize, edite e gerencie todos os seus workflows e agentes</p>
+                </div>
+
+                <div class="controls">
+                    <button class="btn btn-primary" onclick="syncWorkflows()">
+                        🔄 Sincronizar Workflows
+                    </button>
+                    <button class="btn btn-secondary" onclick="loadWorkflows()">
+                        📋 Recarregar Lista
+                    </button>
+                    <button class="btn btn-success" onclick="showMainPanel()">
+                        🏠 Voltar ao Painel Principal
+                    </button>
+                </div>
+
+                <div class="workflows-content">
+                    <div class="workflows-sidebar">
+                        <div class="workflows-count" id="workflowsCount">
+                            Carregando...
+                        </div>
+                        <div class="workflows-list" id="workflowsList">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <p>Carregando workflows...</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="workflow-details" id="workflowDetails">
+                        <div class="empty-state">
+                            <h3>📋 Selecione um Workflow</h3>
+                            <p>Escolha um workflow da lista para visualizar seus detalhes e agentes</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Seção de Workflows Deletados -->
+    <div class="card">
+        <div class="card-header">
+            <h3>🗑️ Workflows Deletados (Backup)</h3>
+            <button onclick="loadDeletedWorkflows()" class="btn btn-secondary">🔄 Atualizar</button>
+        </div>
+        <div class="card-body">
+            <div id="deletedWorkflowsList">
+                <p class="text-muted">Carregando workflows deletados...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Seção de Recuperação Manual -->
+    <div class="card">
+        <div class="card-header">
+            <h3>🔄 Recuperação Manual</h3>
+        </div>
+        <div class="card-body">
+            <div class="form-group">
+                <label for="recoveryWorkflowId">ID do Workflow:</label>
+                <input type="text" id="recoveryWorkflowId" class="form-control" placeholder="Digite o ID do workflow">
+            </div>
+            <button onclick="recoverWorkflowById()" class="btn btn-warning">🔄 Tentar Recuperar</button>
+        </div>
+    </div>
+
+    <div id="notification" class="notification"></div>
+
+    <script>
+        let currentWorkflow = null;
+        let workflows = [];
+
+        // Load workflows on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Show main panel by default
+            showMainPanel();
+        });
+
+        function showMainPanel() {
+            document.getElementById('mainPanel').style.display = 'block';
+            document.getElementById('workflowsPanel').style.display = 'none';
+        }
+
+        function showWorkflowsPanel() {
+            document.getElementById('mainPanel').style.display = 'none';
+            document.getElementById('workflowsPanel').style.display = 'block';
+            loadWorkflows();
+        }
+
+        async function loadWorkflows() {
+            try {
+                showLoading('#workflowsList');
+                
+                const response = await fetch('/api/db/workflows');
+                const result = await response.json();
+                
+                if (result.success) {
+                    workflows = result.data;
+                    displayWorkflows(workflows);
+                } else {
+                    throw new Error(result.error || 'Erro ao carregar workflows');
+                }
+            } catch (error) {
+                console.error('Error loading workflows:', error);
+                showNotification('Erro ao carregar workflows: ' + error.message, 'error');
+                showEmptyState('#workflowsList', 'Erro ao carregar workflows');
+            }
+        }
+
+        async function syncWorkflows() {
+            try {
+                showNotification('Sincronizando workflows...', 'info');
+                
+                const response = await fetch('/api/sync-n8n-to-db', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Falha na sincronização');
+                }
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showNotification('Workflows sincronizados com sucesso!', 'success');
+                    await loadWorkflows();
+                } else {
+                    throw new Error(result.error || 'Erro ao sincronizar workflows');
+                }
+            } catch (error) {
+                console.error('Error syncing workflows:', error);
+                showNotification('Erro ao sincronizar workflows: ' + error.message, 'error');
+            }
+        }
+
+        function displayWorkflows(workflows) {
+            const workflowsList = document.getElementById('workflowsList');
+            workflowsList.innerHTML = '';
+            
+            // NÃO FILTRAR MAIS - EXIBIR TODOS
+            const workflowsToDisplay = workflows;
+            
+            if (!workflowsToDisplay || workflowsToDisplay.length === 0) {
+                workflowsList.innerHTML = `
+                    <div class="empty-state">
+                        <h3>📋 Nenhum workflow encontrado</h3>
+                        <p>Clique em "Sincronizar Workflows" para carregar a lista do n8n.</p>
+                    </div>
+                `;
+                // Update count
+                const countElement = document.getElementById('workflowsCount');
+                if (countElement) {
+                    countElement.textContent = `0 workflows encontrados`;
+                }
+                return;
+            }
+            
+            // Ordenar por data de criação, do mais novo para o mais antigo
+            workflowsToDisplay.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            workflowsToDisplay.forEach(workflow => {
+                const workflowDiv = document.createElement('div');
+                workflowDiv.className = 'workflow-item';
+                workflowDiv.onclick = (event) => selectWorkflow(workflow.id, event.currentTarget);
+                
+                const statusClass = workflow.active ? 'status-active' : 'status-inactive';
+                const statusText = workflow.active ? 'ATIVO' : 'INATIVO';
+                
+                const escapeQuote = (str) => String(str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+                const wfName = escapeQuote(workflow.name);
+                const agentName = (workflow.agents && workflow.agents.length > 0) ? escapeQuote(workflow.agents[0].name) : 'Agente';
+                const agentId = (workflow.agents && workflow.agents.length > 0) ? `'${workflow.agents[0].id}'` : 'null';
+
+                workflowDiv.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3>${workflow.name}</h3>
+                            <span class="workflow-status ${statusClass}">${statusText}</span>
+                            <p>Agentes: ${workflow.agent_count || 0}</p>
+                        </div>
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px;" class="workflow-actions">
+                            <button onclick="event.stopPropagation(); toggleWorkflow('${workflow.id}', ${workflow.active})" class="btn-toggle ${workflow.active ? 'active' : 'inactive'}">
+                                ${workflow.active ? '🟢 Ativo' : '🔴 Inativo'}
+                            </button>
+                            <button onclick="event.stopPropagation(); deleteWorkflow('${workflow.id}')" class="btn-delete">🗑️ Excluir</button>
+                        </div>
+                    </div>
+                `;
+                
+                workflowsList.appendChild(workflowDiv);
+            });
+            
+            // Update the count display
+            const countElement = document.getElementById('workflowsCount');
+            if (countElement) {
+                countElement.textContent = `${workflowsToDisplay.length} workflow(s) encontrado(s)`;
+            }
+        }
+
+        async function toggleWorkflowStatus(workflowId, event) {
+            event.stopPropagation(); // Prevent workflow selection
+            
+            try {
+                const response = await fetch(`/api/db/workflows/${workflowId}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showNotification('✅ Status do workflow alterado com sucesso!', 'success');
+                    loadWorkflows(); // Reload workflows to update display
+                } else {
+                    showNotification('❌ Erro ao alterar status: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('❌ Erro ao alterar status: ' + error.message, 'error');
+            }
+        }
+
+        async function selectWorkflow(workflowId, targetElement) {
+            try {
+                // Update UI to show selected workflow
+                document.querySelectorAll('.workflow-item').forEach(item => {
+                    item.classList.remove('selected');
+                });
+                if(targetElement) {
+                    targetElement.classList.add('selected');
+                }
+
+                // Load workflow details
+                const response = await fetch(`/api/db/workflows/${workflowId}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    currentWorkflow = result.data;
+                    renderWorkflowDetails();
+                } else {
+                    throw new Error(result.error || 'Erro ao carregar detalhes do workflow');
+                }
+            } catch (error) {
+                console.error('Error loading workflow details:', error);
+                showNotification('Erro ao carregar detalhes do workflow: ' + error.message, 'error');
+            }
+        }
+
+        function renderWorkflowDetails() {
+            const container = document.getElementById('workflowDetails');
+            
+            container.innerHTML = `
+                <div class="workflow-header">
+                    <div class="workflow-title" id="workflowTitle" onclick="editWorkflowName()">
+                        ${currentWorkflow.name}
+                    </div>
+                    <div class="workflow-info">
+                        <span>🕒 Atualizado: ${new Date(currentWorkflow.updated_at).toLocaleString()}</span>
+                    </div>
+                </div>
+
+                <div class="agents-section">
+                    <div class="section-title">
+                        🤖 Agentes (${currentWorkflow.agents.length})
+                    </div>
+                    <div class="agents-grid" id="agentsGrid">
+                        ${currentWorkflow.agents.map(agent => `
+                            <div class="agent-card">
+                                <div class="agent-header">
+                                    <div class="agent-name" onclick="editAgentName(${agent.id})">
+                                        ${agent.name}
+                                    </div>
+                                    <div class="agent-type">${agent.type.split('.').pop()}</div>
+                                </div>
+                                <div class="agent-prompt" onclick="editAgentPrompt(${agent.id})">
+                                    ${agent.prompt ? agent.prompt.substring(0, 200) + '...' : 'Nenhum prompt encontrado'}
+                                    <div class="edit-hint">Clique para editar</div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function editWorkflowName() {
+            const titleElement = document.getElementById('workflowTitle');
+            const currentName = titleElement.textContent.trim();
+            
+            titleElement.innerHTML = `
+                <input type="text" value="${currentName}" 
+                       style="font-size: 2em; font-weight: 700; border: none; background: transparent; width: 100%;"
+                       onblur="saveWorkflowName(this.value)"
+                       onkeypress="if(event.key === 'Enter') this.blur()"
+                       autofocus>
+            `;
+        }
+
+        async function saveWorkflowName(newName) {
+            try {
+                const response = await fetch(`/api/db/workflows/${currentWorkflow.id}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    currentWorkflow.name = newName;
+                    renderWorkflowDetails();
+                    await loadWorkflows(); // Refresh the list
+                    showNotification('Nome do workflow atualizado!', 'success');
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar nome do workflow');
+                }
+            } catch (error) {
+                console.error('Error updating workflow name:', error);
+                showNotification('Erro ao atualizar nome do workflow: ' + error.message, 'error');
+                renderWorkflowDetails(); // Restore original name
+            }
+        }
+
+        function editAgentName(agentId) {
+            const agentElement = event.target;
+            const currentName = agentElement.textContent.trim();
+            
+            agentElement.innerHTML = `
+                <input type="text" value="${currentName}" 
+                       style="font-size: 1.1em; font-weight: 600; border: none; background: transparent; width: 100%;"
+                       onblur="saveAgentName(${agentId}, this.value)"
+                       onkeypress="if(event.key === 'Enter') this.blur()"
+                       autofocus>
+            `;
+        }
+
+        async function saveAgentName(agentId, newName) {
+            try {
+                const response = await fetch(`/api/db/agents/${agentId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Update the agent in current workflow
+                    const agent = currentWorkflow.agents.find(a => a.id === agentId);
+                    if (agent) {
+                        agent.name = newName;
+                    }
+                    renderWorkflowDetails();
+                    showNotification('Nome do agente atualizado!', 'success');
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar nome do agente');
+                }
+            } catch (error) {
+                console.error('Error updating agent name:', error);
+                showNotification('Erro ao atualizar nome do agente: ' + error.message, 'error');
+                renderWorkflowDetails(); // Restore original name
+            }
+        }
+
+        function setupTextarea(agentId) {
+            const textarea = document.getElementById(`prompt-textarea-${agentId}`);
+            if (!textarea) return;
+            
+            // Clear any existing content and set up fresh
+            const currentValue = textarea.value;
+            
+            // Remove all event listeners
+            const newTextarea = textarea.cloneNode(true);
+            textarea.parentNode.replaceChild(newTextarea, textarea);
+            
+            // Get the new textarea reference
+            const freshTextarea = document.getElementById(`prompt-textarea-${agentId}`);
+            
+            // Set up the textarea properly
+            freshTextarea.value = currentValue;
+            freshTextarea.focus();
+            freshTextarea.setSelectionRange(freshTextarea.value.length, freshTextarea.value.length);
+            
+            // Ensure it's editable
+            freshTextarea.readOnly = false;
+            freshTextarea.disabled = false;
+            
+            // Add event listeners
+            freshTextarea.addEventListener('click', function(e) {
+                e.stopPropagation();
+            }, true);
+            
+            freshTextarea.addEventListener('keydown', function(e) {
+                e.stopPropagation();
+            }, true);
+            
+            freshTextarea.addEventListener('input', function(e) {
+                e.stopPropagation();
+            }, true);
+            
+            freshTextarea.addEventListener('mousedown', function(e) {
+                e.stopPropagation();
+            }, true);
+            
+            console.log('Textarea configurado com sucesso:', freshTextarea.id);
+        }
+
+        function editAgentPrompt(agentId) {
+            const agent = currentWorkflow.agents.find(a => a.id === agentId);
+            if (!agent) return;
+
+            const promptElement = event.target.closest('.agent-prompt');
+            const currentPrompt = agent.prompt || '';
+            
+            promptElement.classList.add('editing');
+            promptElement.innerHTML = `
+                <div class="prompt-editor-container">
+                    <textarea 
+                        id="prompt-textarea-${agentId}"
+                        class="prompt-edit-textarea"
+                        placeholder="Digite o prompt do agente aqui..."
+                        onkeydown="if(event.key === 'Escape') cancelEditPrompt(${agentId})">${currentPrompt}</textarea>
+                    <div class="prompt-edit-actions">
+                        <button onclick="saveAgentPrompt(${agentId}, document.getElementById('prompt-textarea-${agentId}').value)" class="btn-save-prompt">
+                            💾 Salvar
+                        </button>
+                        <button onclick="cancelEditPrompt(${agentId})" class="btn-cancel-prompt">
+                            ❌ Cancelar
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            // Set up the textarea after a short delay to ensure DOM is ready
+            setTimeout(() => {
+                setupTextarea(agentId);
+            }, 50);
+        }
+
+        function cancelEditPrompt(agentId) {
+            renderWorkflowDetails();
+        }
+
+        async function saveAgentPrompt(agentId, newPrompt) {
+            try {
+                // First update in database
+                const response = await fetch(`/api/db/agents/${agentId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ prompt: newPrompt })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Update the agent in current workflow
+                    const agent = currentWorkflow.agents.find(a => a.id === agentId);
+                    if (agent) {
+                        agent.prompt = newPrompt;
+                    }
+                    
+                    // Now update in n8n
+                    try {
+                        const n8nResponse = await fetch(`/api/db/agents/${agentId}/sync-n8n`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ 
+                                prompt: newPrompt,
+                                workflowId: currentWorkflow.id,
+                                agentName: agent.name
+                            })
+                        });
+                        
+                        const n8nResult = await n8nResponse.json();
+                        
+                        if (n8nResult.success) {
+                            showNotification('Prompt atualizado no banco de dados e no n8n!', 'success');
+                        } else {
+                            showNotification('Prompt atualizado no banco, mas erro no n8n: ' + n8nResult.error, 'error');
+                        }
+                    } catch (n8nError) {
+                        showNotification('Prompt atualizado no banco, mas erro no n8n: ' + n8nError.message, 'error');
+                    }
+                    
+                    renderWorkflowDetails();
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar prompt do agente');
+                }
+            } catch (error) {
+                console.error('Error updating agent prompt:', error);
+                showNotification('Erro ao atualizar prompt do agente: ' + error.message, 'error');
+                renderWorkflowDetails(); // Restore original prompt
+            }
+        }
+
+        function showLoading(selector) {
+            document.querySelector(selector).innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Carregando...</p>
+                </div>
+            `;
+        }
+
+        function showEmptyState(selector, message) {
+            document.querySelector(selector).innerHTML = `
+                <div class="empty-state">
+                    <h3>📭 ${message}</h3>
+                    <p>Tente sincronizar os workflows para carregar os dados</p>
+                </div>
+            `;
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.getElementById('notification');
+            notification.textContent = message;
+            notification.className = `notification ${type} show`;
+            
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 3000);
+        }
+
+        // --- UNIFIED DOMContentLoaded ---
+        document.addEventListener('DOMContentLoaded', function() {
+            // Show main panel by default
+            showMainPanel();
+            
+            // Setup create agent button and input
+            const createAgentButton = document.getElementById('createAgentButton');
+            const newAgentNameInput = document.getElementById('newAgentName');
+
+            if (createAgentButton && newAgentNameInput) {
+                createAgentButton.addEventListener('click', createAgentWithEditableNames);
+                newAgentNameInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        createAgentWithEditableNames();
+                    }
+                });
+            }
+
+            // Analyze existing workflows after a delay
+            setTimeout(() => {
+                analyzeExistingWorkflows();
+            }, 2000);
+        });
+
+
+        // Função para editar nome do workflow dinamicamente
+        async function editWorkflowNameDynamic(workflowId, newName) {
+            try {
+                console.log(`🔄 Editando nome do workflow ${workflowId} para: "${newName}"`);
+                
+                const response = await fetch(`/api/db/workflows/${workflowId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log('✅ Nome do workflow atualizado com sucesso');
+                    showNotification(`Nome do workflow alterado para: "${newName}"`, 'success');
+                    return true;
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar nome do workflow');
+                }
+            } catch (error) {
+                console.error('Erro ao editar nome do workflow:', error);
+                showNotification('Erro ao editar nome do workflow: ' + error.message, 'error');
+                return false;
+            }
+        }
+
+        // Função para editar nome do agente dinamicamente
+        async function editAgentNameDynamic(agentId, newName) {
+            try {
+                console.log(`🔄 Editando nome do agente ${agentId} para: "${newName}"`);
+                
+                const response = await fetch(`/api/db/agents/${agentId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log('✅ Nome do agente atualizado com sucesso');
+                    showNotification(`Nome do agente alterado para: "${newName}"`, 'success');
+                    return true;
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar nome do agente');
+                }
+            } catch (error) {
+                console.error('Erro ao editar nome do agente:', error);
+                showNotification('Erro ao editar nome do agente: ' + error.message, 'error');
+                return false;
+            }
+        }
+
+        // Função para criar workflow com agente e permitir edição de nomes
+        async function createAgentWithEditableNames() {
+            const agentNameInput = document.getElementById('newAgentName');
+            const createButton = document.getElementById('createAgentButton');
+            const spinner = document.getElementById('createAgentSpinner');
+            const buttonText = createButton.querySelector('.button-text');
+
+            const agentName = agentNameInput.value.trim();
+            
+            if (!agentName) {
+                showNotification('Por favor, digite um nome para o agente.', 'error');
+                agentNameInput.focus();
+                return;
+            }
+
+            const workflowName = prompt(`Digite o nome do workflow para o agente "${agentName}":`, `Workflow - ${agentName}`);
+            if (!workflowName) {
+                showNotification('Criação cancelada.', 'info');
+                return;
+            }
+
+            // Set loading state
+            createButton.disabled = true;
+            buttonText.textContent = 'Criando...';
+            spinner.style.display = 'block';
+
+            try {
+                // 1. Chamar a nova rota da nossa API para criar o workflow
+                console.log('📤 Acionando API para criar workflow...');
+                const response = await fetch('/api/create-workflow', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ workflowName, agentName })
+                });
+
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || 'Falha ao acionar a criação do workflow.');
+                }
+                showNotification('Criação iniciada. Aguardando n8n processar...', 'info');
+                
+                // 2. Aguardar e Sincronizar
+                console.log('⏳ Aguardando 5 segundos para o n8n processar...');
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                console.log('🔄 Forçando sincronização n8n -> DB...');
+                const syncResponse = await fetch('/api/sync-n8n-to-db', { method: 'POST' });
+                 if (!syncResponse.ok) {
+                   throw new Error('Falha ao forçar a sincronização.');
+                }
+                showNotification('Sincronização concluída.', 'success');
+
+                // 3. Recarregar a lista de workflows
+                console.log('🔄 Recarregando a lista de workflows...');
+                showWorkflowsPanel(); // Mudar para a tela de gerenciamento
+                
+                showNotification(`Workflow "${workflowName}" criado com sucesso!`, 'success');
+
+            } catch (error) {
+                console.error('❌ Erro no processo de criação:', error);
+                showNotification(`Erro ao criar agente: ${error.message}`, 'error');
+            } finally {
+                // Reset loading state
+                createButton.disabled = false;
+                buttonText.textContent = 'Criar Agente';
+                spinner.style.display = 'none';
+                agentNameInput.value = '';
+            }
+        }
+
+        // Função para analisar workflows existentes
+        async function analyzeExistingWorkflows() {
+            try {
+                console.log('🔍 Analisando workflows existentes no banco de dados...');
+                
+                const response = await fetch('/api/db/workflows');
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    console.log('📊 Workflows encontrados:', result.data.length);
+                    
+                    result.data.forEach((workflow, index) => {
+                        console.log(`📋 Workflow ${index + 1}:`, {
+                            id: workflow.id,
+                            name: workflow.name,
+                            active: workflow.active,
+                            agent_count: workflow.agent_count,
+                            created_at: workflow.created_at,
+                            updated_at: workflow.updated_at
+                        });
+                    });
+                    
+                    // Se houver workflows, analisar o primeiro em detalhes
+                    if (result.data.length > 0) {
+                        const firstWorkflow = result.data.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
+                        console.log('🔍 Analisando primeiro workflow em detalhes...');
+                        
+                        const detailResponse = await fetch(`/api/db/workflows/${firstWorkflow.id}`);
+                        const detailResult = await detailResponse.json();
+                        
+                        if (detailResult.success && detailResult.data) {
+                            const workflow = detailResult.data;
+                            console.log('📋 Detalhes do workflow:', {
+                                id: workflow.id,
+                                name: workflow.name,
+                                active: workflow.active,
+                                agents_count: workflow.agents ? workflow.agents.length : 0
+                            });
+                            
+                            if (workflow.agents && Array.isArray(workflow.agents)) {
+                                workflow.agents.forEach((agent, agentIndex) => {
+                                    console.log(`🤖 Agente ${agentIndex + 1}:`, {
+                                        id: agent.id,
+                                        name: agent.name,
+                                        type: agent.type,
+                                        workflow_id: agent.workflow_id,
+                                        prompt_length: agent.prompt ? agent.prompt.length : 0
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Erro ao analisar workflows:', error);
+            }
+        }
+
+
+        // Variáveis globais para o modal
+        let currentWorkflowId = null;
+        let currentAgentId = null;
+        let currentWorkflowName = '';
+        let currentAgentName = '';
+
+        // Função para abrir o modal de edição
+        function openEditNamesModal(workflowId, agentId, workflowName, agentName) {
+            currentWorkflowId = workflowId;
+            currentAgentId = agentId;
+            currentWorkflowName = workflowName;
+            currentAgentName = agentName;
+            
+            document.getElementById('editWorkflowName').value = workflowName;
+            document.getElementById('editAgentName').value = agentName;
+            document.getElementById('editNamesModal').style.display = 'flex';
+            
+            // Focar no primeiro campo
+            document.getElementById('editWorkflowName').focus();
+        }
+
+        // Função para fechar o modal
+        function closeEditNamesModal() {
+            document.getElementById('editNamesModal').style.display = 'none';
+            currentWorkflowId = null;
+            currentAgentId = null;
+            currentWorkflowName = '';
+            currentAgentName = '';
+        }
+
+        // Função para salvar os nomes
+        async function saveNames() {
+            const newWorkflowName = document.getElementById('editWorkflowName').value.trim();
+            const newAgentName = document.getElementById('editAgentName').value.trim();
+            
+            if (!newWorkflowName || !newAgentName) {
+                showNotification('Por favor, preencha ambos os campos.', 'error');
+                return;
+            }
+            
+            try {
+                let workflowUpdated = false;
+                let agentUpdated = false;
+                
+                // Atualizar nome do workflow se mudou
+                if (newWorkflowName !== currentWorkflowName && currentWorkflowId) {
+                    workflowUpdated = await editWorkflowNameDynamic(currentWorkflowId, newWorkflowName);
+                }
+                
+                // Atualizar nome do agente se mudou
+                if (newAgentName !== currentAgentName && currentAgentId) {
+                    agentUpdated = await editAgentNameDynamic(currentAgentId, newAgentName);
+                }
+                
+                if (workflowUpdated || agentUpdated) {
+                    showNotification('Nomes atualizados com sucesso!', 'success');
+                    closeEditNamesModal();
+                    
+                    // Recarregar workflows se estiver no painel de workflows
+                    if (document.getElementById('workflowsPanel').style.display !== 'none') {
+                        await loadWorkflows();
+                    }
+                } else {
+                    showNotification('Nenhuma alteração foi feita.', 'info');
+                }
+            } catch (error) {
+                console.error('Erro ao salvar nomes:', error);
+                showNotification('Erro ao salvar nomes: ' + error.message, 'error');
+            }
+        }
+
+        // Fechar modal ao clicar fora dele
+        window.onclick = function(event) {
+            const modal = document.getElementById('editNamesModal');
+            if (event.target === modal) {
+                closeEditNamesModal();
+            }
+        }
+
+        // Função para editar prompt do workflow
+        async function editWorkflowPrompt(workflowId) {
+            try {
+                console.log(`🔍 Editando prompt do workflow ${workflowId}`);
+                
+                // Buscar detalhes do workflow
+                const response = await fetch(`/api/db/workflows/${workflowId}`);
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    const workflow = result.data;
+                    console.log('📋 Workflow encontrado:', workflow);
+                    
+                    if (workflow.agents && workflow.agents.length > 0) {
+                        const agent = workflow.agents[0];
+                        console.log('🤖 Agente encontrado:', agent);
+                        
+                        // Abrir modal de edição de prompt (implementar se necessário)
+                        showNotification('Funcionalidade de edição de prompt em desenvolvimento...', 'info');
+                    } else {
+                        showNotification('Nenhum agente encontrado neste workflow.', 'error');
+                    }
+                } else {
+                    throw new Error(result.error || 'Erro ao buscar workflow');
+                }
+            } catch (error) {
+                console.error('Erro ao editar prompt:', error);
+                showNotification('Erro ao editar prompt: ' + error.message, 'error');
+            }
+        }
+
+        // Função para alternar status do workflow
+        async function toggleWorkflow(workflowId, currentStatus) {
+            try {
+                console.log(`🔄 Alternando status do workflow ${workflowId}`);
+                
+                const response = await fetch(`/api/db/workflows/${workflowId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ active: !currentStatus }) // Envia o novo status desejado
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showNotification(`Workflow ${!currentStatus ? 'ativado' : 'desativado'} com sucesso!`, 'success');
+                    await loadWorkflows(); // Recarrega a lista para mostrar a mudança
+                } else {
+                    throw new Error(result.error || 'Erro ao atualizar status do workflow');
+                }
+            } catch (error) {
+                console.error('Erro ao alternar workflow:', error);
+                showNotification('Erro ao alternar workflow: ' + error.message, 'error');
+            }
+        }
+
+        // Função para excluir workflow
+        async function deleteWorkflow(workflowId) {
+            if (!confirm('Tem certeza que deseja excluir este workflow? Esta ação não pode ser desfeita.')) {
+                return;
+            }
+            
+            try {
+                console.log(`🗑️ Excluindo workflow ${workflowId}`);
+                
+                const response = await fetch(`/api/db/workflows/${workflowId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log('✅ Workflow excluído com sucesso');
+                    showNotification('Workflow excluído com sucesso!', 'success');
+                    
+                    // Recarregar workflows
+                    await loadWorkflows();
+                    document.getElementById('workflowDetails').innerHTML = `
+                        <div class="empty-state">
+                            <h3>📋 Selecione um Workflow</h3>
+                            <p>Escolha um workflow da lista para visualizar seus detalhes e agentes</p>
+                        </div>
+                    `;
+                } else {
+                    throw new Error(result.error || 'Erro ao excluir workflow');
+                }
+            } catch (error) {
+                console.error('Erro ao excluir workflow:', error);
+                showNotification('Erro ao excluir workflow: ' + error.message, 'error');
+            }
+        }
+
+        // Função para recuperar workflow deletado
+        async function recoverWorkflow(workflowId) {
+            if (!confirm('Tem certeza que deseja tentar recuperar este workflow?')) {
+                return;
+            }
+            
+            try {
+                console.log(`🔄 Tentando recuperar workflow ${workflowId}`);
+                
+                const response = await fetch(`/api/db/workflows/${workflowId}/recover`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log('✅ Workflow recuperado com sucesso');
+                    showNotification('Workflow recuperado com sucesso!', 'success');
+                    
+                    // Recarregar workflows
+                    await loadWorkflows();
+                    await loadDeletedWorkflows();
+                } else {
+                    console.log('❌ Não foi possível recuperar o workflow:', result.error);
+                    showNotification('Não foi possível recuperar o workflow: ' + result.error, 'error');
+                    
+                    // Mostrar sugestões se disponíveis
+                    if (result.suggestions) {
+                        console.log('💡 Sugestões:', result.suggestions);
+                        let suggestionsText = 'Sugestões:\n';
+                        result.suggestions.forEach(suggestion => {
+                            suggestionsText += `• ${suggestion}\n`;
+                        });
+                        alert(suggestionsText);
+                    }
+                    
+                    // Mostrar backups disponíveis se houver
+                    if (result.availableBackups && result.availableBackups.length > 0) {
+                        console.log('📦 Backups disponíveis:', result.availableBackups);
+                        let backupsText = 'Backups disponíveis:\n';
+                        result.availableBackups.forEach(backup => {
+                            backupsText += `• ${backup.name} (${backup.id}) - Deletado em: ${backup.deletedAt}\n`;
+                        });
+                        alert(backupsText);
+                    }
+                }
+            } catch (error) {
+                console.error('Erro ao tentar recuperar workflow:', error);
+                showNotification('Erro ao tentar recuperar workflow: ' + error.message, 'error');
+            }
+        }
+
+        // Função para carregar workflows deletados do backup
+        async function loadDeletedWorkflows() {
+            try {
+                const response = await fetch('/api/db/deleted-workflows');
+                const deletedWorkflows = await response.json();
+                
+                const container = document.getElementById('deletedWorkflowsList');
+                
+                if (deletedWorkflows.length === 0) {
+                    container.innerHTML = '<p class="text-muted">Nenhum workflow deletado encontrado no backup.</p>';
+                    return;
+                }
+                
+                let html = '<div class="table-responsive"><table class="table table-striped">';
+                html += '<thead><tr><th>Nome</th><th>ID</th><th>Deletado em</th><th>Ações</th></tr></thead><tbody>';
+                
+                deletedWorkflows.forEach(workflow => {
+                    const deletedDate = new Date(workflow.deletedAt).toLocaleString('pt-BR');
+                    html += `
+                        <tr>
+                            <td>${workflow.name}</td>
+                            <td><code>${workflow.id}</code></td>
+                            <td>${deletedDate}</td>
+                            <td>
+                                <button onclick="recoverWorkflow('${workflow.id}')" class="btn btn-sm btn-warning">
+                                    🔄 Recuperar
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</tbody></table></div>';
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Erro ao carregar workflows deletados:', error);
+                document.getElementById('deletedWorkflowsList').innerHTML = 
+                    '<p class="text-danger">Erro ao carregar workflows deletados: ' + error.message + '</p>';
+            }
+        }
+
+        // Função para recuperar workflow por ID manualmente
+        async function recoverWorkflowById() {
+            const workflowId = document.getElementById('recoveryWorkflowId').value.trim();
+            
+            if (!workflowId) {
+                showNotification('Por favor, digite o ID do workflow', 'error');
+                return;
+            }
+            
+            await recoverWorkflow(workflowId);
+        }
+
+        // Função para testar o webhook e investigar o workflow "Criador de Robôs"
+        async function testWebhookAndInvestigate() {
+            try {
+                console.log('🔍 TESTE: Investigando workflow "Criador de Robôs"...');
+                
+                // 1. Primeiro, vamos buscar o workflow "Criador de Robôs" na API do n8n
+                const n8nResponse = await fetch('/api/n8n/workflows');
+                const n8nResult = await n8nResponse.json();
+                
+                if (n8nResult.success && n8nResult.data) {
+                    console.log('📊 Workflows encontrados no n8n:', n8nResult.data.length);
+                    
+                    // Procurar pelo workflow "Criador de Robôs"
+                    const criadorRobos = n8nResult.data.find(wf => 
+                        wf.name && wf.name.toLowerCase().includes('criador de robôs')
+                    );
+                    
+                    if (criadorRobos) {
+                        console.log('✅ Workflow "Criador de Robôs" encontrado:', {
+                            id: criadorRobos.id,
+                            name: criadorRobos.name,
+                            active: criadorRobos.active,
+                            nodes: criadorRobos.nodes ? criadorRobos.nodes.length : 0
+                        });
+                        
+                        // 2. Analisar os nós do workflow
+                        if (criadorRobos.nodes) {
+                            console.log('🔍 ANALISANDO NÓS DO WORKFLOW "CRIADOR DE ROBÔS":');
+                            criadorRobos.nodes.forEach((node, index) => {
+                                console.log(`📋 Nó ${index + 1}:`, {
+                                    id: node.id,
+                                    name: node.name,
+                                    type: node.type,
+                                    position: node.position
+                                });
+                                
+                                // Procurar especificamente pelo nó "Create Workflow"
+                                if (node.name && node.name.toLowerCase().includes('create workflow')) {
+                                    console.log('🎯 NÓ "CREATE WORKFLOW" ENCONTRADO!');
+                                    console.log('📊 Detalhes completos do nó:', JSON.stringify(node, null, 2));
+                                    
+                                    // Analisar parâmetros do nó
+                                    if (node.parameters) {
+                                        console.log('🔧 PARÂMETROS DO NÓ "CREATE WORKFLOW":');
+                                        console.log(JSON.stringify(node.parameters, null, 2));
+                                        
+                                        // Procurar por variáveis de nome
+                                        function findNameInParameters(obj, path = '') {
+                                            if (typeof obj === 'object' && obj !== null) {
+                                                Object.entries(obj).forEach(([key, value]) => {
+                                                    const currentPath = path ? `${path}.${key}` : key;
+                                                    
+                                                    if (key === 'name' && typeof value === 'string') {
+                                                        console.log(`📋 Nome encontrado em ${currentPath}: "${value}"`);
+                                                    }
+                                                    
+                                                    if (key === 'title' && typeof value === 'string') {
+                                                        console.log(`📋 Título encontrado em ${currentPath}: "${value}"`);
+                                                    }
+                                                    
+                                                    if (key === 'workflowName' && typeof value === 'string') {
+                                                        console.log(`📋 WorkflowName encontrado em ${currentPath}: "${value}"`);
+                                                    }
+                                                    
+                                                    if (key === 'parameters' && typeof value === 'object') {
+                                                        console.log(`🔧 Parâmetros encontrados em ${currentPath}:`, JSON.stringify(value, null, 2));
+                                                    }
+                                                    
+                                                    // Procurar recursivamente
+                                                    findNameInParameters(value, currentPath);
+                                                });
+                                            }
+                                        }
+                                        
+                                        findNameInParameters(node.parameters);
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // 3. Testar o webhook com dados específicos
+                        console.log('🧪 TESTE: Acionando webhook com dados de teste...');
+                        
+                        const testWebhookResponse = await fetch(`https://auto.criard.me/webhook-test/2316be94-103b-410e-97c9-aedf72fb7f86?workflowName=${encodeURIComponent(testWorkflowName)}&agentName=${encodeURIComponent(testAgentName)}`, {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        
+                        if (testWebhookResponse.ok) {
+                            const testWebhookResult = await testWebhookResponse.json();
+                            console.log('📊 Resposta do webhook de teste:', testWebhookResult);
+                            
+                            // 4. Aguardar e verificar se algum workflow foi criado
+                            console.log('⏳ Aguardando 10 segundos para verificar se workflow foi criado...');
+                            await new Promise(resolve => setTimeout(resolve, 10000));
+                            
+                            const afterWebhookResponse = await fetch('/api/db/workflows');
+                            const afterWebhookResult = await afterWebhookResponse.json();
+                            
+                            console.log('📊 Workflows após webhook:', afterWebhookResult.data.length);
+                            
+                            if (afterWebhookResult.success && afterWebhookResult.data.length > 0) {
+                                const sortedWorkflows = afterWebhookResult.data.sort((a, b) => {
+                                    return new Date(b.created_at) - new Date(a.created_at);
+                                });
+                                
+                                console.log('📋 Workflows ordenados por data:');
+                                sortedWorkflows.forEach((wf, index) => {
+                                    const wfDate = new Date(wf.created_at);
+                                    const now = new Date();
+                                    const timeDiff = (now - wfDate) / 1000;
+                                    console.log(`📋 Workflow ${index + 1}:`, {
+                                        id: wf.id,
+                                        name: wf.name,
+                                        created_at: wf.created_at,
+                                        timeDiff: `${timeDiff.toFixed(0)} segundos`
+                                    });
+                                });
+                            }
+                        } else {
+                            console.log('❌ Webhook de teste falhou:', testWebhookResponse.status);
+                        }
+                        
+                    } else {
+                        console.log('❌ Workflow "Criador de Robôs" não encontrado');
+                        console.log('📋 Workflows disponíveis:');
+                        n8nResult.data.forEach((wf, index) => {
+                            console.log(`📋 ${index + 1}: ${wf.name} (ID: ${wf.id})`);
+                        });
+                    }
+                } else {
+                    console.log('❌ Erro ao buscar workflows do n8n:', n8nResult.error);
+                }
+                
+            } catch (error) {
+                console.error('❌ Erro no teste de investigação:', error);
+            }
+        }
+
+        // Função para testar o webhook com dados GET
+        async function testWebhookWithData() {
+            try {
+                console.log('🧪 TESTE: Testando webhook com dados dinâmicos via GET...');
+                
+                // Testar com dados de exemplo
+                const testWorkflowName = "Teste Workflow Dinâmico";
+                const testAgentName = "Agente Teste";
+                
+                const webhookUrl = `https://autowebhook.criard.me/webhook/2316be94-103b-410e-97c9-aedf72fb7f86?workflowName=${encodeURIComponent(testWorkflowName)}&agentName=${encodeURIComponent(testAgentName)}`;
+                console.log('📤 URL de teste:', webhookUrl);
+                
+                const webhookResponse = await fetch(webhookUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (webhookResponse.ok) {
+                    const webhookResult = await webhookResponse.json();
+                    console.log('✅ Webhook GET funcionou:', webhookResult);
+                    
+                    // Aguardar e verificar se workflow foi criado
+                    console.log('⏳ Aguardando 15 segundos para verificar criação...');
+                    await new Promise(resolve => setTimeout(resolve, 15000));
+                    
+                    const workflowsResponse = await fetch('/api/db/workflows');
+                    const workflowsResult = await workflowsResponse.json();
+                    
+                    console.log('📊 Workflows após webhook GET:', workflowsResult.data.length);
+                    
+                    if (workflowsResult.success && workflowsResult.data.length > 0) {
+                        const sortedWorkflows = workflowsResult.data.sort((a, b) => {
+                            return new Date(b.created_at) - new Date(a.created_at);
+                        });
+                        
+                        console.log('📋 Workflows ordenados por data:');
+                        sortedWorkflows.forEach((wf, index) => {
+                            const wfDate = new Date(wf.created_at);
+                            const now = new Date();
+                            const timeDiff = (now - wfDate) / 1000;
+                            console.log(`📋 Workflow ${index + 1}:`, {
+                                id: wf.id,
+                                name: wf.name,
+                                created_at: wf.created_at,
+                                timeDiff: `${timeDiff.toFixed(0)} segundos`
+                            });
+                        });
+                    }
+                } else {
+                    console.log('❌ Webhook GET falhou:', webhookResponse.status);
+                    const errorText = await webhookResponse.text();
+                    console.log('📝 Erro detalhado:', errorText);
+                }
+                
+            } catch (error) {
+                console.error('❌ Erro no teste GET:', error);
+            }
+        }
+
+        // Função de inicialização
+        async function initialize() {
+            console.log('🚀 Inicializando painel administrativo...');
+            
+            try {
+                await loadWorkflows();
+                await loadDeletedWorkflows();
+                console.log('✅ Painel inicializado com sucesso');
+            } catch (error) {
+                console.error('❌ Erro na inicialização:', error);
+                showNotification('Erro na inicialização: ' + error.message, 'error');
+            }
+        }
+
+        // Inicializar quando a página carregar
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('📄 Página carregada, iniciando...');
+            initialize();
+        });
+    </script>
+    
+</body>
+</html> 

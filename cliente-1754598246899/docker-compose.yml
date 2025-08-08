@@ -1,0 +1,106 @@
+version: '3'
+
+volumes:
+  postgres-data:
+  redis-data:
+  storage:
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    env_file:
+      - chatwoot.env
+    environment:
+      POSTGRES_DB: chatwoot_production
+      POSTGRES_USER: chatwoot_prod
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  redis:
+    image: redis:7.0-alpine
+    restart: unless-stopped
+    command: sh -c "redis-server --requirepass $$REDIS_PASSWORD"
+    volumes:
+      - redis-data:/data
+    env_file:
+      - chatwoot.env
+
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    restart: unless-stopped
+    entrypoint: /app/docker/entrypoints/rails.sh
+    command: sh -c "bundle exec rails db:prepare && bundle exec rails s -p 3000 -b '0.0.0.0'"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "3001:3000"
+    env_file:
+      - chatwoot.env
+    environment:
+      RAILS_ENV: production
+      FRONTEND_URL: http://localhost:3001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USERNAME: chatwoot_prod
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: chatwoot_production
+      REDIS_URL: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      INSTALLATION_ENV: docker
+
+  sidekiq:
+    image: chatwoot/chatwoot:latest
+    restart: unless-stopped
+    entrypoint: /app/docker/entrypoints/rails.sh
+    command: bundle exec sidekiq -C config/sidekiq.yml
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - chatwoot.env
+    environment:
+      RAILS_ENV: production
+      FRONTEND_URL: http://localhost:3001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USERNAME: chatwoot_prod
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: chatwoot_production
+      REDIS_URL: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      INSTALLATION_ENV: docker
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - "4001:5678"
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n_database
+      DB_POSTGRESDB_USER: chatwoot_prod
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${SECRET_KEY_BASE}
+      EXECUTIONS_DATA_SAVE_ON_ERROR: all
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: all
+      EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS: true
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      - postgres
+
+volumes:
+  postgres-data:
+  redis-data:
+  storage:
+  n8n-data:

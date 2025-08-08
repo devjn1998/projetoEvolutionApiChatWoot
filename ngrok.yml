@@ -1,0 +1,13 @@
+version: "2"
+authtoken: 30Hx5xQ5QNN0zE8EWNmcitVOiKE_86CEYfTyTUQahX4BoMdf6
+
+tunnels:
+  chatwoot:
+    addr: 3000
+    proto: http
+    inspect: true
+    
+  evolution-api:
+    addr: 8080
+    proto: http
+    inspect: true

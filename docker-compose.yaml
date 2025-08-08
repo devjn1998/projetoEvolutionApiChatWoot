@@ -1,0 +1,190 @@
+services:
+  # Banco de dados PostgreSQL (baseado no oficial Evolution API)
+  postgres:
+    container_name: postgres
+    image: pgvector/pgvector:pg16
+    networks:
+      - evolution-net
+    command: ["postgres", "-c", "max_connections=1000"]
+    restart: always
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_PASSWORD=chatwoot123
+      - POSTGRES_USER=chatwoot
+      - POSTGRES_DB=chatwoot_production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - 5432
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -p 5432 -U chatwoot -d chatwoot_production']
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+
+  # Redis para cache e sessões
+  redis:
+    container_name: redis
+    image: 'redis:7.0-alpine'
+    networks:
+      - evolution-net
+    restart: always
+    command: redis-server --requirepass chatwoot123 --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - '6379:6379'
+    expose:
+      - 6379
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a chatwoot123 ping | grep PONG']
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  # Evolution API para WhatsApp (configuração oficial)
+  evolution-api:
+    container_name: evolution_api
+    image: 'evoapicloud/evolution-api:v2.3.1'
+    networks:
+      - evolution-net
+    restart: always
+    ports:
+      - '8080:8080'
+    environment:
+      - AUTHENTICATION_API_KEY=B6D711FCDE4D4FD5936544120E713976
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://chatwoot:chatwoot123@postgres:5432/chatwoot_production?schema=evolution
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_api
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://:chatwoot123@redis:6379/2
+      - REDIS_PREFIX_KEY=evolution_api
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://:chatwoot123@redis:6379/3
+      - CACHE_REDIS_PREFIX_KEY=evolution_cache
+      - CACHE_LOCAL_ENABLED=false
+      # Configurações do Chatwoot
+      - CHATWOOT_ENABLED=true
+      - CHATWOOT_MESSAGE_READ=true
+      - CHATWOOT_MESSAGE_DELETE=true
+      - CHATWOOT_BOT_CONTACT=true
+      - CHATWOOT_AUTOMATIC_CONTACT=true
+      - CHATWOOT_EXPIRE_TICKET=0
+      - CHATWOOT_IMPORT_CONTACTS=true
+      - CHATWOOT_NAME_INBOX=evolution
+      - CHATWOOT_MERGE_BRAZIL_CONTACTS=true
+      - CHATWOOT_IMPORT_MESSAGES=true
+      - CHATWOOT_DAYS_LIMIT_IMPORT_MESSAGES=0
+      - CHATWOOT_SKIP_CONTACT_FILTER=true
+      # URLs internas para comunicação entre containers
+      - CHATWOOT_BASE_URL=http://chatwoot:3000
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      # Forçar webhook correto
+      - WEBHOOK_BASE=http://evolution-api:8080
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    depends_on:
+      - postgres
+      - redis
+    expose:
+      - 8080
+
+  # Chatwoot PT-BR
+  chatwoot:
+    container_name: chatwoot
+    image: 'chatwoot/chatwoot:v4.1.0'
+    networks:
+      - evolution-net
+    restart: unless-stopped
+    volumes:
+      - 'chatwoot_storage:/app/storage'
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - DEFAULT_LOCALE=pt_BR
+      - FORCE_SSL=false
+      - ENABLE_ACCOUNT_SIGNUP=true
+      - FRONTEND_URL=http://localhost:3000
+      - INTERNAL_HOST_URL=http://chatwoot:3000
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=chatwoot
+      - POSTGRES_PASSWORD=chatwoot123
+      - POSTGRES_DATABASE=chatwoot_production
+      - SECRET_KEY_BASE=8f3e7d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4
+      - REDIS_URL=redis://:chatwoot123@redis:6379/1
+      - REDIS_PASSWORD=chatwoot123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - MAILER_SENDER_EMAIL=naoresponder@seudominio.com
+      - SMTP_DOMAIN=localhost
+      - ACTIVE_STORAGE_SERVICE=local
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['sh', '-c', 'bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0']
+    ports:
+      - '3000:3000'
+    expose:
+      - 3000
+
+  # Sidekiq para processamento em background
+  sidekiq:
+    container_name: sidekiq
+    image: 'chatwoot/chatwoot:v4.1.0'
+    networks:
+      - evolution-net
+    restart: unless-stopped
+    volumes:
+      - 'chatwoot_storage:/app/storage'
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - DEFAULT_LOCALE=pt_BR
+      - INTERNAL_HOST_URL=http://chatwoot:3000
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=chatwoot
+      - POSTGRES_PASSWORD=chatwoot123
+      - POSTGRES_DATABASE=chatwoot_production
+      - SECRET_KEY_BASE=8f3e7d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4
+      - REDIS_URL=redis://:chatwoot123@redis:6379/1
+      - REDIS_PASSWORD=chatwoot123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RAILS_LOG_TO_STDOUT=true
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  chatwoot_storage:
+    driver: local
+  evolution_instances:
+    driver: local
+  evolution_store:
+    driver: local
+
+networks:
+  evolution-net:
+    name: evolution-net
+    driver: bridge

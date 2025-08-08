@@ -1,0 +1,47 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    environment:
+      - POSTGRES_DB=${POSTGRES_DATABASE:-chatwoot}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+
+  redis:
+    image: redis:7.0-alpine
+    restart: unless-stopped
+    command: redis-server
+    volumes:
+      - ./redis-data:/data
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+
+  chatwoot:
+    image: chatwoot/chatwoot:develop
+    restart: unless-stopped
+    ports:
+      - '${APP_PORT:-3000}:3000'
+    volumes:
+      - ./chatwoot-data:/app/storage
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - RAILS_ENV=production
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-chatwoot}
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY_BASE=${SECRET_KEY_BASE:-}
+      - INSTALLATION_ENV=${INSTALLATION_ENV:-docker}
+
+volumes:
+  postgres-data:
+  redis-data:
+  chatwoot-data:
