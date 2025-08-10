@@ -16,7 +16,8 @@
     "http-proxy-middleware": "^3.0.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.6.5",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "qrcode": "^1.5.4"
   },
   "keywords": [
     "n8n",

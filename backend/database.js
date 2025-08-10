@@ -1,81 +1,115 @@
-const mysql = require('mysql2/promise');
+const mysql = require("mysql2/promise");
 
 class Database {
-    // --- Construtor ---
-    constructor() {
-        this.connection = null;
-    }
+  // --- Construtor ---
+  constructor() {
+    this.connection = null;
+  }
 
-    // --- Inicializa o banco de dados ---
-    async init() {
-        let connectionConfig = {
-            host: 'localhost', // --- Host do banco de dados ---
-            user: 'root', // --- Usuário do banco de dados ---
-            database: 'n8n_workflows' // --- Nome do banco de dados ---
-        };
+  // --- Inicializa o banco de dados ---
+  async init() {
+    // Preferir variáveis de ambiente, com defaults seguros
+    const connectionConfig = {
+      host: process.env.MYSQL_HOST || "127.0.0.1",
+      user: process.env.MYSQL_USER || "root",
+      database: process.env.MYSQL_DATABASE || "n8n_workflows",
+      port: parseInt(process.env.MYSQL_PORT || "3306", 10),
+    };
 
-        try { // --- Tenta conectar com uma senha (coloque sua senha em uma variável de ambiente no futuro)
-            console.log("🔄 Tentando conectar ao MySQL com senha...");
-            connectionConfig.password = '25714740@Mcm'; // ATENÇÃO: Hardcoded. Mover para .env
-            this.pool = mysql.createPool(connectionConfig); // --- Cria o pool de conexões ---
-            await this.pool.query('SELECT 1'); // --- Testa a conexão ---
-            console.log('✅ MySQL Database connected successfully (com senha)'); // --- Exibe uma mensagem de sucesso ---
-        } catch (error) {
-            if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-                // --- Se o acesso for negado, tenta sem senha ---
-                console.warn("⚠️  Acesso com senha negado. Tentando conectar sem senha...");
-                connectionConfig.password = ''; // --- Define a senha como vazia ---
-                try { // --- Tenta conectar com uma senha (coloque sua senha em uma variável de ambiente no futuro)
-                    this.pool = mysql.createPool(connectionConfig);
-                    await this.pool.query('SELECT 1'); // --- Testa a conexão ---
-                    console.log('✅ MySQL Database connected successfully (sem senha)'); // --- Exibe uma mensagem de sucesso ---
-                } catch (noPasswordError) {
-                    console.error("❌ Falha na conexão com e sem senha.", noPasswordError); // --- Exibe uma mensagem de erro ---
-                    throw noPasswordError; // --- Lança o erro para o server.js tratar ---
-                }
-            } else if (error.code === 'ER_BAD_DB_ERROR') {
-                 // --- Se o banco de dados não existe, tenta criá-lo ---
-                console.warn(`⚠️  Banco de dados '${connectionConfig.database}' não encontrado. Tentando criar...`); // --- Exibe uma mensagem de erro ---
-                await this.createDatabase(connectionConfig); // --- Cria o banco de dados ---
-            } else {
-                console.error("❌ Erro inesperado na conexão com o banco de dados.", error); // --- Exibe uma mensagem de erro ---
-                throw error; // --- Lança outros erros ---
-            }
-        }
-        
-        this.connection = this.pool; // --- Mantém a compatibilidade com o resto do código que usa this.connection ---
-        await this.createTables(); // --- Cria as tabelas ---
-    }
+    const envPassword = process.env.MYSQL_PASSWORD;
 
-    async createDatabase(config) { // --- Cria um banco de dados ---
-        let tempConnection; // --- Cria uma conexão temporária sem especificar o banco de dados ---
+    try {
+      // 1) Tenta conectar com senha (se fornecida)
+      console.log("🔄 Tentando conectar ao MySQL com senha...");
+      if (envPassword !== undefined) {
+        connectionConfig.password = envPassword;
+      }
+      this.pool = mysql.createPool(connectionConfig);
+      await this.pool.query("SELECT 1");
+      console.log("✅ MySQL conectado (com senha)");
+    } catch (error) {
+      if (error.code === "ER_BAD_DB_ERROR") {
+        // DB não existe ainda, cria e reconecta
+        console.warn(
+          `⚠️  Banco de dados '${connectionConfig.database}' não encontrado. Tentando criar...`
+        );
+        await this.createDatabase(connectionConfig);
+      } else if (error.code === "ER_ACCESS_DENIED_ERROR") {
+        // 2) Se acesso negado, tenta sem senha
+        console.warn(
+          "⚠️  Acesso com senha negado. Tentando conectar sem senha..."
+        );
+        const noPassConfig = { ...connectionConfig, password: "" };
         try {
-            const tempConfig = { ...config, database: null }; // --- Cria uma configuração temporária sem especificar o banco de dados ---
-            tempConnection = await mysql.createConnection(tempConfig); // --- Cria uma conexão temporária sem especificar o banco de dados ---
-            
-            await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${config.database}\`;`); // --- Cria o banco de dados ---
-            console.log(`✅ Banco de dados '${config.database}' criado ou já existente.`); // --- Exibe uma mensagem de sucesso ---
-            
-            // --- Reconecta usando a configuração original com o banco de dados ---
-            this.pool = mysql.createPool(config); // --- Cria um pool de conexões ---
-            await this.pool.query('SELECT 1'); // --- Testa a conexão ---
-            console.log(`✅ Conectado ao banco de dados '${config.database}' recém-criado.`); // --- Exibe uma mensagem de sucesso ---
-
-            } catch (error) {
-            console.error(`❌ Falha crítica ao criar o banco de dados.`, error); // --- Exibe uma mensagem de erro ---
-            throw error; // --- Lança outros erros ---
-        } finally {
-            if (tempConnection) { // --- Se a conexão temporária existe, fecha a conexão ---
-                await tempConnection.end(); // --- Fecha a conexão ---
-            }
+          this.pool = mysql.createPool(noPassConfig);
+          await this.pool.query("SELECT 1");
+          console.log("✅ MySQL conectado (sem senha)");
+        } catch (noPasswordError) {
+          if (noPasswordError.code === "ER_BAD_DB_ERROR") {
+            console.warn(
+              `⚠️  Banco de dados '${connectionConfig.database}' não encontrado (sem senha). Criando...`
+            );
+            await this.createDatabase(noPassConfig);
+          } else {
+            console.error(
+              "❌ Falha na conexão com e sem senha.",
+              noPasswordError
+            );
+            throw noPasswordError;
+          }
         }
+      } else {
+        console.error(
+          "❌ Erro inesperado na conexão com o banco de dados.",
+          error
+        );
+        throw error;
+      }
     }
-    
-    async createTables() { // --- Cria as tabelas ---
-        if (!this.pool) throw new Error("A conexão com o banco de dados não foi estabelecida."); // --- Lança um erro se a conexão com o banco de dados não foi estabelecida ---
-        try { // --- Tenta criar as tabelas ---
-            // --- Cria a tabela de workflows ---
-            await this.pool.execute(`
+
+    this.connection = this.pool; // --- Mantém a compatibilidade com o resto do código que usa this.connection ---
+    await this.createTables(); // --- Cria as tabelas ---
+  }
+
+  async createDatabase(config) {
+    // --- Cria um banco de dados ---
+    let tempConnection; // --- Cria uma conexão temporária sem especificar o banco de dados ---
+    try {
+      const tempConfig = { ...config, database: null }; // --- Cria uma configuração temporária sem especificar o banco de dados ---
+      tempConnection = await mysql.createConnection(tempConfig); // --- Cria uma conexão temporária sem especificar o banco de dados ---
+
+      await tempConnection.query(
+        `CREATE DATABASE IF NOT EXISTS \`${config.database}\`;`
+      ); // --- Cria o banco de dados ---
+      console.log(
+        `✅ Banco de dados '${config.database}' criado ou já existente.`
+      ); // --- Exibe uma mensagem de sucesso ---
+
+      // --- Reconecta usando a configuração original com o banco de dados ---
+      this.pool = mysql.createPool(config); // --- Cria um pool de conexões ---
+      await this.pool.query("SELECT 1"); // --- Testa a conexão ---
+      console.log(
+        `✅ Conectado ao banco de dados '${config.database}' recém-criado.`
+      ); // --- Exibe uma mensagem de sucesso ---
+    } catch (error) {
+      console.error(`❌ Falha crítica ao criar o banco de dados.`, error); // --- Exibe uma mensagem de erro ---
+      throw error; // --- Lança outros erros ---
+    } finally {
+      if (tempConnection) {
+        // --- Se a conexão temporária existe, fecha a conexão ---
+        await tempConnection.end(); // --- Fecha a conexão ---
+      }
+    }
+  }
+
+  async createTables() {
+    // --- Cria as tabelas ---
+    if (!this.pool)
+      throw new Error("A conexão com o banco de dados não foi estabelecida."); // --- Lança um erro se a conexão com o banco de dados não foi estabelecida ---
+    try {
+      // --- Tenta criar as tabelas ---
+      // --- Cria a tabela de workflows ---
+      await this.pool.execute(`
                 CREATE TABLE IF NOT EXISTS workflows (
                     id VARCHAR(255) PRIMARY KEY,
                     name VARCHAR(255) NOT NULL,
@@ -90,8 +124,8 @@ class Database {
                     createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             `);
-            // --- Cria a tabela de agents ---
-            await this.connection.execute(`
+      // --- Cria a tabela de agents ---
+      await this.connection.execute(`
                 CREATE TABLE IF NOT EXISTS agents (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     workflow_id VARCHAR(255) NOT NULL,
@@ -104,7 +138,7 @@ class Database {
                     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
                 )
             `);
-            await this.connection.execute(`
+      await this.connection.execute(`
                 CREATE TABLE IF NOT EXISTS credentials (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     workflow_id VARCHAR(255) NOT NULL,
@@ -116,9 +150,9 @@ class Database {
                     UNIQUE KEY (workflow_id, type)
                 )
             `);
-            
-            // --- Cria a tabela de clients (multi-tenant) ---
-            await this.connection.execute(`
+
+      // --- Cria a tabela de clients (multi-tenant) ---
+      await this.connection.execute(`
                 CREATE TABLE IF NOT EXISTS clients (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     client_id VARCHAR(255) UNIQUE NOT NULL,
@@ -134,22 +168,26 @@ class Database {
                     INDEX idx_n8n_port (n8n_port)
                 )
             `);
-            
-            console.log("✅ Tabelas 'workflows', 'agents', 'credentials' e 'clients' verificadas/criadas com sucesso.");
-        } catch (error) {
-            console.error('❌ Erro ao criar as tabelas:', error);
-            throw error;
-        }
+
+      console.log(
+        "✅ Tabelas 'workflows', 'agents', 'credentials' e 'clients' verificadas/criadas com sucesso."
+      );
+    } catch (error) {
+      console.error("❌ Erro ao criar as tabelas:", error);
+      throw error;
+    }
+  }
+
+  async syncAllWorkflows(n8nWorkflows) {
+    // --- Sincroniza todos os workflows ---
+    if (!n8nWorkflows || n8nWorkflows.length === 0) {
+      // --- Se não houver workflows, retorna ---
+      console.log("Nenhum workflow para sincronizar."); // --- Exibe uma mensagem ---
+      return; // --- Retorna ---
     }
 
-    async syncAllWorkflows(n8nWorkflows) { // --- Sincroniza todos os workflows ---
-        if (!n8nWorkflows || n8nWorkflows.length === 0) { // --- Se não houver workflows, retorna ---
-            console.log('Nenhum workflow para sincronizar.'); // --- Exibe uma mensagem ---
-            return; // --- Retorna ---
-       }
-
-       // --- Cria a query para sincronizar os workflows ---
-        const query = `
+    // --- Cria a query para sincronizar os workflows ---
+    const query = `
             INSERT INTO workflows (id, name, active, nodes, connections, settings, staticData, tags, triggerCount, createdAt, updatedAt)
             VALUES ?
             ON DUPLICATE KEY UPDATE
@@ -163,159 +201,226 @@ class Database {
             triggerCount = VALUES(triggerCount),
             updatedAt = VALUES(updatedAt)
         `;
-       // --- Cria os valores para a query ---
-        const values = n8nWorkflows.map(wf => [
-            wf.id,
-           wf.name ?? 'Workflow sem nome',
-           wf.active ?? false,
-           JSON.stringify(wf.nodes ?? null),
-           JSON.stringify(wf.connections ?? null),
-           JSON.stringify(wf.settings ?? null),
-           JSON.stringify(wf.staticData ?? null),
-           JSON.stringify(wf.tags ?? null),
-           wf.triggerCount ?? 0,
-            wf.createdAt ? new Date(wf.createdAt) : new Date(),
-            wf.updatedAt ? new Date(wf.updatedAt) : new Date()
-        ]);
+    // --- Cria os valores para a query ---
+    const values = n8nWorkflows.map((wf) => [
+      wf.id,
+      wf.name ?? "Workflow sem nome",
+      wf.active ?? false,
+      JSON.stringify(wf.nodes ?? null),
+      JSON.stringify(wf.connections ?? null),
+      JSON.stringify(wf.settings ?? null),
+      JSON.stringify(wf.staticData ?? null),
+      JSON.stringify(wf.tags ?? null),
+      wf.triggerCount ?? 0,
+      wf.createdAt ? new Date(wf.createdAt) : new Date(),
+      wf.updatedAt ? new Date(wf.updatedAt) : new Date(),
+    ]);
 
-       const connection = await this.pool.getConnection(); // --- Obtém uma conexão do pool ---
-       try { // --- Tenta sincronizar os workflows ---
-           await connection.beginTransaction(); // --- Inicia uma transação ---
-           
-           const workflowIds = n8nWorkflows.map(wf => wf.id); // --- Obtém os IDs dos workflows ---
-           if (workflowIds.length > 0) { // --- Se houver workflows, deleta os agentes ---
-               await connection.query('DELETE FROM agents WHERE workflow_id IN (?)', [workflowIds]); // --- Deleta os agentes ---
-           }
+    const connection = await this.pool.getConnection(); // --- Obtém uma conexão do pool ---
+    try {
+      // --- Tenta sincronizar os workflows ---
+      await connection.beginTransaction(); // --- Inicia uma transação ---
 
-           if (values.length > 0) { // --- Se houver workflows, sincroniza os workflows ---
-               await connection.query(query, [values]); // --- Sincroniza os workflows ---
-           }
+      const workflowIds = n8nWorkflows.map((wf) => wf.id); // --- Obtém os IDs dos workflows ---
+      if (workflowIds.length > 0) {
+        // --- Se houver workflows, deleta os agentes ---
+        await connection.query("DELETE FROM agents WHERE workflow_id IN (?)", [
+          workflowIds,
+        ]); // --- Deleta os agentes ---
+      }
 
-           for (const wf of n8nWorkflows) { // --- Para cada workflow ---
-               const agentNodes = (wf.nodes || []).filter(node => 
-                   node.type === '@n8n/n8n-nodes-langchain.agent' || node.type === 'n8n-nodes-langchain.agent'
-               );
-               // --- Se houver agentes, sincroniza os agentes ---
-               if (agentNodes.length > 0) { // --- Se houver agentes, sincroniza os agentes ---
-                   const agentValues = agentNodes.map(agentNode => { // --- Obtém os valores dos agentes ---
-                       const prompt = agentNode.parameters?.options?.systemMessage || agentNode.parameters?.text || ''; // --- Obtém o prompt do agente ---
-                       return [
-                           wf.id, // --- ID do workflow ---
-                           agentNode.name || 'Agente sem nome', // --- Nome do agente ---
-                           prompt // --- Prompt do agente ---
-                       ];
-                   });
-                   await connection.query('INSERT INTO agents (workflow_id, name, prompt) VALUES ?', [agentValues]); // --- Sincroniza os agentes ---
-               }
-           }
+      if (values.length > 0) {
+        // --- Se houver workflows, sincroniza os workflows ---
+        await connection.query(query, [values]); // --- Sincroniza os workflows ---
+      }
 
-           await connection.commit(); // --- Comita a transação ---
-           console.log(`✅ ${values.length} workflows e seus agentes foram sincronizados com o banco de dados.`); // --- Exibe uma mensagem de sucesso ---
-       } catch (error) { // --- Se houver um erro, desfaz a transação ---
-           await connection.rollback(); // --- Desfaz a transação ---
-           console.error('❌ Erro na transação de sincronização:', error); // --- Exibe uma mensagem de erro ---
-           throw error; // --- Lança outros erros ---
-       } finally { // --- Finaliza a transação ---
-           connection.release(); // --- Libera a conexão ---
-       }
-   }
+      for (const wf of n8nWorkflows) {
+        // --- Para cada workflow ---
+        const agentNodes = (wf.nodes || []).filter(
+          (node) =>
+            node.type === "@n8n/n8n-nodes-langchain.agent" ||
+            node.type === "n8n-nodes-langchain.agent"
+        );
+        // --- Se houver agentes, sincroniza os agentes ---
+        if (agentNodes.length > 0) {
+          // --- Se houver agentes, sincroniza os agentes ---
+          const agentValues = agentNodes.map((agentNode) => {
+            // --- Obtém os valores dos agentes ---
+            const prompt =
+              agentNode.parameters?.options?.systemMessage ||
+              agentNode.parameters?.text ||
+              ""; // --- Obtém o prompt do agente ---
+            return [
+              wf.id, // --- ID do workflow ---
+              agentNode.name || "Agente sem nome", // --- Nome do agente ---
+              prompt, // --- Prompt do agente ---
+            ];
+          });
+          await connection.query(
+            "INSERT INTO agents (workflow_id, name, prompt) VALUES ?",
+            [agentValues]
+          ); // --- Sincroniza os agentes ---
+        }
+      }
 
-   async getWorkflows() { // --- Obtém todos os workflows ---
-       // --- Cria a query para obter todos os workflows ---
-       const [rows] = await this.pool.execute(`
+      await connection.commit(); // --- Comita a transação ---
+      console.log(
+        `✅ ${values.length} workflows e seus agentes foram sincronizados com o banco de dados.`
+      ); // --- Exibe uma mensagem de sucesso ---
+    } catch (error) {
+      // --- Se houver um erro, desfaz a transação ---
+      await connection.rollback(); // --- Desfaz a transação ---
+      console.error("❌ Erro na transação de sincronização:", error); // --- Exibe uma mensagem de erro ---
+      throw error; // --- Lança outros erros ---
+    } finally {
+      // --- Finaliza a transação ---
+      connection.release(); // --- Libera a conexão ---
+    }
+  }
+
+  async getWorkflows() {
+    // --- Obtém todos os workflows ---
+    // --- Cria a query para obter todos os workflows ---
+    const [rows] = await this.pool.execute(`
            SELECT w.*, COUNT(a.id) as agent_count
            FROM workflows w LEFT JOIN agents a ON w.id = a.workflow_id
            GROUP BY w.id
        `);
-       return rows; // --- Retorna os workflows ---
-   }
+    return rows; // --- Retorna os workflows ---
+  }
 
-   async getWorkflowWithAgents(workflowId) { // --- Obtém um workflow com seus agentes ---
-       const [workflows] = await this.pool.execute('SELECT * FROM workflows WHERE id = ?', [workflowId]); // --- Obtém o workflow ---
-       if (workflows.length === 0) return null; // --- Se não houver workflow, retorna null ---
-       const workflow = workflows[0]; // --- Obtém o workflow ---
-       const [agents] = await this.pool.execute('SELECT * FROM agents WHERE workflow_id = ?', [workflowId]); // --- Obtém os agentes ---
-       workflow.agents = agents;
-       return workflow;
-   }
+  async getWorkflowWithAgents(workflowId) {
+    // --- Obtém um workflow com seus agentes ---
+    const [workflows] = await this.pool.execute(
+      "SELECT * FROM workflows WHERE id = ?",
+      [workflowId]
+    ); // --- Obtém o workflow ---
+    if (workflows.length === 0) return null; // --- Se não houver workflow, retorna null ---
+    const workflow = workflows[0]; // --- Obtém o workflow ---
+    const [agents] = await this.pool.execute(
+      "SELECT * FROM agents WHERE workflow_id = ?",
+      [workflowId]
+    ); // --- Obtém os agentes ---
+    workflow.agents = agents;
+    return workflow;
+  }
 
-   async toggleWorkflowStatus(workflowId) { // --- Alterna o status de um workflow ---
-       const [workflows] = await this.pool.execute('SELECT active FROM workflows WHERE id = ?', [workflowId]); // --- Obtém o workflow ---
-       if (workflows.length === 0) throw new Error('Workflow not found'); // --- Se não houver workflow, lança um erro ---
-       const newStatus = !workflows[0].active; // --- Obtém o novo status ---
-       await this.pool.execute('UPDATE workflows SET active = ? WHERE id = ?', [newStatus, workflowId]); // --- Atualiza o status do workflow ---
-       return { success: true, active: newStatus }; // --- Retorna o novo status ---
-   }
+  async toggleWorkflowStatus(workflowId) {
+    // --- Alterna o status de um workflow ---
+    const [workflows] = await this.pool.execute(
+      "SELECT active FROM workflows WHERE id = ?",
+      [workflowId]
+    ); // --- Obtém o workflow ---
+    if (workflows.length === 0) throw new Error("Workflow not found"); // --- Se não houver workflow, lança um erro ---
+    const newStatus = !workflows[0].active; // --- Obtém o novo status ---
+    await this.pool.execute("UPDATE workflows SET active = ? WHERE id = ?", [
+      newStatus,
+      workflowId,
+    ]); // --- Atualiza o status do workflow ---
+    return { success: true, active: newStatus }; // --- Retorna o novo status ---
+  }
 
-   async updateWorkflowName(workflowId, newName) { // --- Atualiza o nome de um workflow ---
-       await this.pool.execute('UPDATE workflows SET name = ? WHERE id = ?', [newName, workflowId]); // --- Atualiza o nome do workflow ---
-       return { success: true }; // --- Retorna o novo nome ---
-   }
+  async updateWorkflowName(workflowId, newName) {
+    // --- Atualiza o nome de um workflow ---
+    await this.pool.execute("UPDATE workflows SET name = ? WHERE id = ?", [
+      newName,
+      workflowId,
+    ]); // --- Atualiza o nome do workflow ---
+    return { success: true }; // --- Retorna o novo nome ---
+  }
 
-   async updateAgentName(agentId, newName) { // --- Atualiza o nome de um agente ---
-       await this.pool.execute('UPDATE agents SET name = ? WHERE id = ?', [newName, agentId]); // --- Atualiza o nome do agente ---
-       return { success: true }; // --- Retorna o novo nome ---
-   }
+  async updateAgentName(agentId, newName) {
+    // --- Atualiza o nome de um agente ---
+    await this.pool.execute("UPDATE agents SET name = ? WHERE id = ?", [
+      newName,
+      agentId,
+    ]); // --- Atualiza o nome do agente ---
+    return { success: true }; // --- Retorna o novo nome ---
+  }
 
-   async updateAgentPrompt(agentId, newPrompt) { // --- Atualiza o prompt de um agente ---
-       await this.pool.execute('UPDATE agents SET prompt = ? WHERE id = ?', [newPrompt, agentId]); // --- Atualiza o prompt do agente ---
-       return { success: true }; // --- Retorna o novo prompt ---
-   }
+  async updateAgentPrompt(agentId, newPrompt) {
+    // --- Atualiza o prompt de um agente ---
+    await this.pool.execute("UPDATE agents SET prompt = ? WHERE id = ?", [
+      newPrompt,
+      agentId,
+    ]); // --- Atualiza o prompt do agente ---
+    return { success: true }; // --- Retorna o novo prompt ---
+  }
 
-   async deleteWorkflowAndAgents(workflowId) { // --- Deleta um workflow e seus agentes ---
-       const [result] = await this.pool.execute('DELETE FROM workflows WHERE id = ?', [workflowId]); // --- Deleta o workflow ---
-       if (result.affectedRows === 0) { // --- Se não houver workflow, exibe uma mensagem de erro ---
-           console.warn(`Workflow com ID ${workflowId} não encontrado no banco para deletar.`); // --- Exibe uma mensagem de erro ---
-       }
-               return { success: true }; // --- Retorna true ---
+  async deleteWorkflowAndAgents(workflowId) {
+    // --- Deleta um workflow e seus agentes ---
+    const [result] = await this.pool.execute(
+      "DELETE FROM workflows WHERE id = ?",
+      [workflowId]
+    ); // --- Deleta o workflow ---
+    if (result.affectedRows === 0) {
+      // --- Se não houver workflow, exibe uma mensagem de erro ---
+      console.warn(
+        `Workflow com ID ${workflowId} não encontrado no banco para deletar.`
+      ); // --- Exibe uma mensagem de erro ---
     }
+    return { success: true }; // --- Retorna true ---
+  }
 
-    async saveCredentials(workflowId, credentials) {
-        const connection = await this.pool.getConnection();
-        try {
-            await connection.beginTransaction();
-            for (const type in credentials) {
-                const data = JSON.stringify(credentials[type]);
-                await connection.query(`
+  async saveCredentials(workflowId, credentials) {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const type in credentials) {
+        const data = JSON.stringify(credentials[type]);
+        await connection.query(
+          `
                     INSERT INTO credentials (workflow_id, type, data)
                     VALUES (?, ?, ?)
                     ON DUPLICATE KEY UPDATE data = VALUES(data)
-                `, [workflowId, type, data]);
-            }
-            await connection.commit();
-            return { success: true };
-        } catch (error) {
-            await connection.rollback();
-            console.error('Erro ao salvar credenciais:', error);
-            throw error;
-        } finally {
-            connection.release();
-        }
+                `,
+          [workflowId, type, data]
+        );
+      }
+      await connection.commit();
+      return { success: true };
+    } catch (error) {
+      await connection.rollback();
+      console.error("Erro ao salvar credenciais:", error);
+      throw error;
+    } finally {
+      connection.release();
     }
+  }
 
-    async getCredentials(workflowId) {
-        const [rows] = await this.pool.execute('SELECT type, data FROM credentials WHERE workflow_id = ?', [workflowId]);
-        const credentials = {};
-        for (const row of rows) {
-            try {
-                // O 'data' vem do DB como uma string JSON, precisamos fazer o parse.
-                if (typeof row.data === 'string') {
-                    credentials[row.type] = JSON.parse(row.data);
-                } else if (typeof row.data === 'object') {
-                    // Se já é um objeto, usa diretamente
-                    credentials[row.type] = row.data;
-                } else {
-                    console.warn(`⚠️ Tipo de dados inesperado para credential ${row.type}:`, typeof row.data, row.data);
-                    credentials[row.type] = {};
-                }
-            } catch (error) {
-                console.error(`❌ Erro ao fazer parse das credenciais ${row.type}:`, error.message);
-                console.error(`Dados problemáticos:`, row.data);
-                credentials[row.type] = {};
-            }
+  async getCredentials(workflowId) {
+    const [rows] = await this.pool.execute(
+      "SELECT type, data FROM credentials WHERE workflow_id = ?",
+      [workflowId]
+    );
+    const credentials = {};
+    for (const row of rows) {
+      try {
+        // O 'data' vem do DB como uma string JSON, precisamos fazer o parse.
+        if (typeof row.data === "string") {
+          credentials[row.type] = JSON.parse(row.data);
+        } else if (typeof row.data === "object") {
+          // Se já é um objeto, usa diretamente
+          credentials[row.type] = row.data;
+        } else {
+          console.warn(
+            `⚠️ Tipo de dados inesperado para credential ${row.type}:`,
+            typeof row.data,
+            row.data
+          );
+          credentials[row.type] = {};
         }
-        return credentials;
+      } catch (error) {
+        console.error(
+          `❌ Erro ao fazer parse das credenciais ${row.type}:`,
+          error.message
+        );
+        console.error(`Dados problemáticos:`, row.data);
+        credentials[row.type] = {};
+      }
     }
+    return credentials;
+  }
 }
 // --- Exporta a classe ---
 module.exports = Database;

@@ -1,39 +1,39 @@
 <script setup>
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref } from "vue";
+import { useRouter } from "vue-router";
 
 // Importando componentes do PrimeVue
-import Button from 'primevue/button';
-import InputText from 'primevue/inputtext';
-import Card from 'primevue/card';
-import Divider from 'primevue/divider';
-import Message from 'primevue/message';
+import Button from "primevue/button";
+import Card from "primevue/card";
+import Divider from "primevue/divider";
+import InputText from "primevue/inputtext";
+import Message from "primevue/message";
 
-const fullName = ref('');
-const nameEnterprise = ref('');
-const username = ref('');
-const email = ref('');
-const password = ref('');
+const fullName = ref("");
+const nameEnterprise = ref("");
+const username = ref("");
+const email = ref("");
+const password = ref("");
 const router = useRouter();
 
 // Estados para feedback visual
 const isLoading = ref(false);
-const errorMessage = ref('');
-const successMessage = ref('');
+const errorMessage = ref("");
+const successMessage = ref("");
 
 const handleRegister = async () => {
   // Limpar mensagens anteriores
-  errorMessage.value = '';
-  successMessage.value = '';
+  errorMessage.value = "";
+  successMessage.value = "";
 
   // Validação básica
   if (!fullName.value || !nameEnterprise.value || !email.value || !password.value) {
-    errorMessage.value = 'Por favor, preencha todos os campos obrigatórios.';
+    errorMessage.value = "Por favor, preencha todos os campos obrigatórios.";
     return;
   }
 
   if (password.value.length < 6) {
-    errorMessage.value = 'A senha deve ter pelo menos 6 caracteres.';
+    errorMessage.value = "A senha deve ter pelo menos 6 caracteres.";
     return;
   }
 
@@ -47,51 +47,48 @@ const handleRegister = async () => {
       username: username.value,
       email: email.value,
       password: password.value,
-      timestamp: new Date().toISOString()
-    }
+      timestamp: new Date().toISOString(),
+    };
 
-    console.log('Enviando dados para o backend...', formData);;
-
+    console.log("Enviando dados para o backend...", formData);
 
     // Remover timestamp (não é necessário para registro)
     delete formData.timestamp;
-    
-    console.log('Registrando usuário...', { ...formData, password: '[HIDDEN]' });
+
+    console.log("Registrando usuário...", { ...formData, password: "[HIDDEN]" });
 
     // Enviar dados para a API de registro
-    const response = await fetch('http://localhost:3001/api/auth/register', {
-      method: 'POST',
+    const response = await fetch("http://localhost:3001/api/auth/register", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(formData)
+      body: JSON.stringify(formData),
     });
 
     const data = await response.json();
-    console.log('Resposta da API:', data);
+    console.log("Resposta da API:", data);
 
     if (data.success) {
-      console.log('Usuário registrado com sucesso');
+      console.log("Usuário registrado com sucesso");
       successMessage.value = `Registrado com sucesso! Sua instância: ${data.instanceName}. Redirecionando para login...`;
       setTimeout(() => {
-        router.push('/login');
+        router.push("/login");
       }, 3000);
-
     } else {
-      console.error('Erro ao registrar:', data.error);
-      errorMessage.value = data.error || 'Erro ao registrar usuário';
+      console.error("Erro ao registrar:", data.error);
+      errorMessage.value = data.error || "Erro ao registrar usuário";
     }
-
   } catch (error) {
-    console.error('❌ Erro de conexão:', error);
-    errorMessage.value = 'Erro de conexão. Verifique sua internet e tente novamente.';
+    console.error("❌ Erro de conexão:", error);
+    errorMessage.value = "Erro de conexão. Verifique sua internet e tente novamente.";
   } finally {
     isLoading.value = false;
   }
 };
 
 const goToLogin = () => {
-  router.push('/login');
+  router.push("/login");
 };
 </script>
 
@@ -135,27 +132,27 @@ const goToLogin = () => {
               <label for="password">Crie uma senha</label>
               <InputText id="password" v-model="password" type="password" class="w-full" />
             </div>
-            <Button 
-              type="submit" 
-              :label="isLoading ? 'Cadastrando...' : 'Cadastrar'" 
-              severity="success" 
-              class="w-full" 
+            <Button
+              type="submit"
+              :label="isLoading ? 'Cadastrando...' : 'Cadastrar'"
+              severity="success"
+              class="w-full"
               size="large"
               :loading="isLoading"
               :disabled="isLoading"
             />
           </form>
-          
+
           <Divider align="center" class="my-4">
             <span class="text-600 text-sm">OU</span>
           </Divider>
-          
-          <Button 
-            label="Cadastrar com Google" 
-            icon="pi pi-google" 
-            severity="secondary" 
-            outlined 
-            class="w-full" 
+
+          <Button
+            label="Cadastrar com Google"
+            icon="pi pi-google"
+            severity="secondary"
+            outlined
+            class="w-full"
             size="large"
           />
         </template>
@@ -172,7 +169,7 @@ const goToLogin = () => {
 
 <style scoped>
 .register-background {
-  background-image: url('@/assets/images/background.png');
+  background-image: url("@/assets/images/background.png");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -182,7 +179,7 @@ const goToLogin = () => {
 }
 
 .register-background::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;

@@ -18,7 +18,11 @@ services:
     expose:
       - 5432
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -p 5432 -U chatwoot -d chatwoot_production']
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h localhost -p 5432 -U chatwoot -d chatwoot_production",
+        ]
       interval: 30s
       timeout: 20s
       retries: 5
@@ -27,7 +31,7 @@ services:
   # Redis para cache e sessões
   redis:
     container_name: redis
-    image: 'redis:7.0-alpine'
+    image: "redis:7.0-alpine"
     networks:
       - evolution-net
     restart: always
@@ -35,11 +39,11 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - '6379:6379'
+      - "6379:6379"
     expose:
       - 6379
     healthcheck:
-      test: ['CMD-SHELL', 'redis-cli -a chatwoot123 ping | grep PONG']
+      test: ["CMD-SHELL", "redis-cli -a chatwoot123 ping | grep PONG"]
       interval: 30s
       timeout: 20s
       retries: 5
@@ -47,12 +51,12 @@ services:
   # Evolution API para WhatsApp (configuração oficial)
   evolution-api:
     container_name: evolution_api
-    image: 'evoapicloud/evolution-api:v2.3.1'
+    image: "evoapicloud/evolution-api:v2.3.1"
     networks:
       - evolution-net
     restart: always
     ports:
-      - '8080:8080'
+      - "8080:8080"
     environment:
       - AUTHENTICATION_API_KEY=B6D711FCDE4D4FD5936544120E713976
       - DATABASE_ENABLED=true
@@ -101,12 +105,12 @@ services:
   # Chatwoot PT-BR
   chatwoot:
     container_name: chatwoot
-    image: 'chatwoot/chatwoot:v4.1.0'
+    image: "chatwoot/chatwoot:v4.1.0"
     networks:
       - evolution-net
     restart: unless-stopped
     volumes:
-      - 'chatwoot_storage:/app/storage'
+      - "chatwoot_storage:/app/storage"
     depends_on:
       - postgres
       - redis
@@ -135,21 +139,26 @@ services:
       - SMTP_DOMAIN=localhost
       - ACTIVE_STORAGE_SERVICE=local
     entrypoint: docker/entrypoints/rails.sh
-    command: ['sh', '-c', 'bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0']
+    command:
+      [
+        "sh",
+        "-c",
+        "bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0",
+      ]
     ports:
-      - '3000:3000'
+      - "3000:3000"
     expose:
       - 3000
 
   # Sidekiq para processamento em background
   sidekiq:
     container_name: sidekiq
-    image: 'chatwoot/chatwoot:v4.1.0'
+    image: "chatwoot/chatwoot:v4.1.0"
     networks:
       - evolution-net
     restart: unless-stopped
     volumes:
-      - 'chatwoot_storage:/app/storage'
+      - "chatwoot_storage:/app/storage"
     depends_on:
       - postgres
       - redis
@@ -170,7 +179,35 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - RAILS_LOG_TO_STDOUT=true
-    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+
+  # n8n para automação de workflows
+  n8n:
+    container_name: n8n
+    image: "n8nio/n8n:latest"
+    networks:
+      - evolution-net
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_USER_MANAGEMENT_DISABLED=true
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_METRICS=false
+      - N8N_LOG_LEVEL=info
+      - N8N_DEFAULT_LOCALE=pt_BR
+      - WEBHOOK_URL=http://localhost:5678
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - N8N_ENCRYPTION_KEY=n8n-local-encryption-key-123
+      - N8N_API_KEY=n8n-local-api-key
+    volumes:
+      - n8n_data:/home/node/.n8n
+    expose:
+      - 5678
 
 volumes:
   postgres_data:
@@ -182,6 +219,8 @@ volumes:
   evolution_instances:
     driver: local
   evolution_store:
+    driver: local
+  n8n_data:
     driver: local
 
 networks:

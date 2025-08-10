@@ -3,20 +3,36 @@ const fetch = require('node-fetch');
 
 class N8nAPI {
     // --- Construtor ---
-    constructor(n8nUrl, apiKey) {
+    constructor(n8nUrl, apiKey = null) {
         if (!n8nUrl) throw new Error("A URL do n8n é obrigatória.");
-        if (!apiKey) throw new Error("A API Key do n8n é obrigatória.");
 
         this.baseUrl = n8nUrl.endsWith('/') ? n8nUrl.slice(0, -1) : n8nUrl;
         this.apiKey = apiKey;
         this.headers = {
             'Content-Type': 'application/json',
-            'X-N8N-API-KEY': this.apiKey,
         };
+        
+        if (this.apiKey) {
+            this.headers['X-N8N-API-KEY'] = this.apiKey;
+        }
+    }
+
+    // Método para atualizar a API key
+    updateApiKey(newApiKey) {
+        this.apiKey = newApiKey;
+        if (newApiKey) {
+            this.headers['X-N8N-API-KEY'] = newApiKey;
+        } else {
+            delete this.headers['X-N8N-API-KEY'];
+        }
     }
 
     // Função auxiliar para realizar as chamadas fetch
     async _fetch(path, options = {}) {
+        if (!this.apiKey) {
+            throw new Error("API Key do n8n não configurada. Configure via frontend primeiro.");
+        }
+
         const fullUrl = `${this.baseUrl}${path}`;
         
         const config = {
