@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 // Importações PrimeVue
 import Button from "primevue/button";
@@ -10,6 +10,13 @@ import FloatLabel from "primevue/floatlabel";
 import InputText from "primevue/inputtext";
 import Panel from "primevue/panel";
 import Textarea from "primevue/textarea";
+import TabView from "primevue/tabview";
+import TabPanel from "primevue/tabpanel";
+import Chip from "primevue/chip";
+import Badge from "primevue/badge";
+import Checkbox from "primevue/checkbox";
+import Accordion from "primevue/accordion";
+import AccordionTab from "primevue/accordiontab";
 import { useToast } from "primevue/usetoast";
 
 const toast = useToast();
@@ -20,20 +27,25 @@ const workflows = ref([]);
 const currentWorkflow = ref(null);
 
 const showCreateAgentModal = ref(false);
+  // Seleção de template de agente
+  const agentTemplates = ref([
+    { key: 'standard', title: 'Agente Standard', desc: 'Webhook + IA + Chatwoot + WhatsApp + Sheets' },
+  ]);
+  // Por padrão, nenhum template selecionado
+  const selectedTemplate = ref(null);
 const showConfigModal = ref(false);
 const showPromptModal = ref(false);
 const showClientModal = ref(false);
+const showWorkflowConfigModal = ref(false);
+const selectedWorkflowForConfig = ref(null);
+const workflowAnalysis = ref(null);
 const editingCredentialType = ref(null);
 const editingAgentId = ref(null);
 const editingAgentName = ref("");
 const tempPrompt = ref("");
 
-// Estado para gestão de clientes multi-tenant
-const clients = ref([]);
-const isProvisioningClient = ref(false);
-
 // Estado para navegação entre páginas
-const currentPage = ref("workflows"); // 'workflows', 'clients', 'settings', 'qrcode'
+const currentPage = ref("workflows"); // 'workflows', 'settings', 'qrcode'
 
 // Estado para conexão WhatsApp
 const whatsappConnection = reactive({
@@ -53,15 +65,25 @@ const n8nStatus = reactive({
   authError: false,
 });
 
-// Estado para API Key manual
-const manualApiKey = ref("");
+// Estado para controle dos nodes
+const nodesStatus = reactive({
+  loading: false,
+  nodes: [],
+  lastCheck: null,
+});
 
-// Constante para API Key padrão (mesma do n8n)
-const DEFAULT_API_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3MDk0N2QzMC0zNDlhLTRhNjMtYmUyOS1mMmU4ZjVlMDNhNDQiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzU0ODU0OTMxLCJleHAiOjE3NTczODY4MDB9._ABlWvKjEGtruONVB1P8E6tTAw3jbH1M3baByATDLRk";
+  // Estado para configuração manual do N8N
+  const manualApiKey = ref("");
+  const instanceUrl = ref(""); // URL da instância N8N (será carregada do backend)
 
-// API Key atual (pode ser a padrão ou a manual)
-const API_KEY = computed(() => manualApiKey.value || DEFAULT_API_KEY);
+// Função para obter headers de autenticaçãoA
+function getAuthHeaders() {
+  const token = localStorage.getItem("authToken");
+  return {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+}
 
 // Verificar autenticação e carregar dados do usuário
 async function checkAuth() {
@@ -78,6 +100,8 @@ async function checkAuth() {
         Authorization: `Bearer ${token}`,
       },
     });
+
+    console.log("🔍 Resposta do /api/auth/me:", response.status, response.ok);
 
     if (response.ok) {
       const data = await response.json();
@@ -211,8 +235,14 @@ function startStatusCheck() {
   }, 120000);
 }
 
-function navigateToPage(page) {
+async function navigateToPage(page) {
   currentPage.value = page;
+  
+  // Se está navegando para configurações, recarregar configuração N8N
+  if (page === 'settings') {
+    console.log('📄 Acessando configurações - recarregando N8N config...');
+    await loadN8nConfig();
+  }
 
   // Se navegar para a página de QR Code, verificar status inicial
   if (page === "qrcode") {
@@ -231,33 +261,32 @@ function navigateToPage(page) {
   }
 }
 
+// Função para sincronização completa do N8N
+async function syncN8nConfiguration() {
+  console.log('🔄 Iniciando sincronização completa do N8N...');
+  
+  // 1. Carregar configuração salva
+  await loadN8nConfig();
+  
+  // 2. Verificar status atual
+  await checkN8nStatus();
+  
+  // 3. Se estiver online, carregar workflows
+  if (n8nStatus.online) {
+    await loadWorkflows();
+  }
+  
+  console.log(`✅ Sincronização completa finalizada. URL: ${instanceUrl.value}, Status: ${n8nStatus.online ? 'Online' : 'Offline'}`);
+}
+
 // Verificar autenticação ao carregar o dashboard
 onMounted(async () => {
   const isAuthenticated = await checkAuth();
   if (isAuthenticated) {
-    // Sincronizar a API key padrão com o backend
-    try {
-      await fetch("http://localhost:3001/api/n8n/sync-api-key", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          apiKey: DEFAULT_API_KEY,
-        }),
-      });
-      console.log("✅ API Key padrão sincronizada com o backend");
-    } catch (error) {
-      console.warn("⚠️ Erro ao sincronizar API key padrão:", error);
-    }
+    console.log("🔧 Dashboard carregado - usuário autenticado");
 
-    // Verificar status do n8n primeiro
-    await checkN8nStatus();
-
-    // Se n8n estiver online, carregar workflows
-    if (n8nStatus.online) {
-      await loadWorkflows();
-    }
+    // Sincronização completa do N8N
+    await syncN8nConfiguration();
 
     // await loadClients();
     console.log("✅ Dashboard carregado e usuário autenticado");
@@ -298,14 +327,11 @@ const newAgentForm = reactive({
 const configCredentialsForm = reactive({
   chatwoot: { apiUrl: "", accessToken: "" },
   gemini: { apiKey: "" },
-  googleSheets: { clientId: "", clientSecret: "" },
+    googleSheets: { clientId: "", clientSecret: "" },
+    evolution: { baseUrl: "", apiKey: "" },
 });
 
-// Formulário para criar novos clientes
-const newClientForm = reactive({
-  clientName: "",
-  clientEmail: "",
-});
+// Removido formulário de clientes
 
 // Computed property para filtrar workflows que têm agentes
 const filteredWorkflows = computed(() => {
@@ -326,6 +352,11 @@ const geminiConfigured = computed(() => {
 const googleSheetsConfigured = computed(() => {
   const creds = currentWorkflow.value?.credentials?.googleSheets;
   return creds && creds.clientId && creds.clientSecret;
+});
+
+const evolutionConfigured = computed(() => {
+  const creds = currentWorkflow.value?.credentials?.evolution;
+  return creds && creds.baseUrl && creds.apiKey;
 });
 
 // Funções de Notificação usando PrimeVue Toast
@@ -356,6 +387,12 @@ async function checkN8nStatus() {
       n8nStatus.online = result.success && result.status === "online";
       n8nStatus.authError = false;
       n8nStatus.message = result.message;
+      
+      // Sincronizar URL se o backend retornou uma diferente
+      if (result.instanceUrl && result.instanceUrl !== instanceUrl.value) {
+        console.log(`🔄 Sincronizando URL: ${instanceUrl.value} → ${result.instanceUrl}`);
+        instanceUrl.value = result.instanceUrl;
+      }
     }
 
     console.log("🔍 Status do n8n:", result);
@@ -371,34 +408,385 @@ async function checkN8nStatus() {
   }
 }
 
-// Função para salvar API Key manual
+// Função para remover conexão N8N
+async function removeN8nConnection() {
+  try {
+    console.log('🗑️ Removendo conexão N8N...');
+    const response = await fetch("http://localhost:3001/api/n8n/config", {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      console.log('✅ Conexão N8N removida com sucesso');
+      instanceUrl.value = "";
+      manualApiKey.value = "";
+      n8nStatus.online = false;
+      n8nStatus.message = "Conexão removida";
+      showNotification("Conexão N8N removida com sucesso!", "success");
+    } else {
+      console.error('❌ Erro ao remover conexão N8N:', result.error);
+      showNotification("Erro ao remover conexão N8N", "error");
+    }
+  } catch (error) {
+    console.error('❌ Erro ao remover conexão N8N:', error);
+    showNotification("Erro ao remover conexão N8N", "error");
+  }
+}
+
+// Função para encerrar conexão e tentar novamente
+async function resetN8nConnection() {
+  try {
+    showNotification("Encerrando conexão e tentando novamente...", "info");
+    
+    // 1. Remover conexão atual
+    await removeN8nConnection();
+    
+    // 2. Aguardar um momento
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 3. Tentar verificar status novamente
+    await checkN8nStatus();
+    
+    showNotification("Conexão resetada. Verifique se o n8n está rodando.", "info");
+  } catch (error) {
+    console.error('❌ Erro ao resetar conexão N8N:', error);
+    showNotification("Erro ao resetar conexão N8N", "error");
+  }
+}
+
+// Função para carregar configuração N8N salva
+async function loadN8nConfig() {
+      try {
+      console.log('🔄 Carregando configuração N8N do servidor...');
+      const response = await fetch("http://localhost:3001/api/n8n/config", {
+      headers: getAuthHeaders(),
+    });
+    
+    const result = await response.json();
+    console.log('📥 Resposta do servidor:', result);
+    
+    if (result.config && result.config.instanceUrl) {
+      const oldUrl = instanceUrl.value;
+      instanceUrl.value = result.config.instanceUrl;
+      console.log(`✅ Interface atualizada: ${oldUrl} → ${result.config.instanceUrl}`);
+      
+      // Forçar reatividade da interface
+      await nextTick();
+      console.log(`🔍 Valor atual da variável instanceUrl: ${instanceUrl.value}`);
+    } else {
+      console.log("ℹ️ Nenhuma configuração N8N encontrada - usando padrão");
+      instanceUrl.value = "http://localhost:5678";
+    }
+    
+    // Atualizar também o status do N8N para sincronizar
+    await checkN8nStatus();
+  } catch (error) {
+    console.warn("⚠️ Erro ao carregar configuração N8N:", error);
+  }
+}
+
+// Função para verificar status dos nodes
+async function checkNodesStatus() {
+  nodesStatus.loading = true;
+  try {
+    const response = await fetch("http://localhost:3001/api/n8n/nodes-status", {
+      headers: getAuthHeaders(),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      nodesStatus.nodes = result.nodes;
+      nodesStatus.lastCheck = new Date();
+      console.log("📦 Status dos nodes:", result.nodes);
+    } else {
+      console.warn("⚠️ Erro ao verificar status dos nodes:", result.error);
+    }
+  } catch (error) {
+    console.warn("⚠️ Erro ao verificar status dos nodes:", error);
+  } finally {
+    nodesStatus.loading = false;
+  }
+}
+
+// Função para instalar nodes necessários
+async function installRequiredNodes() {
+  nodesStatus.loading = true;
+  try {
+    showNotification("Instalando nodes necessários...", "info");
+    
+    const response = await fetch("http://localhost:3001/api/n8n/install-nodes", {
+      method: "POST",
+      headers: getAuthHeaders(),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      const { successful, failed, summary } = result.results;
+      
+      if (summary.installed > 0) {
+        showNotification(`${summary.installed} nodes instalados com sucesso!`, "success");
+      }
+      
+      if (summary.failed > 0) {
+        console.warn("❌ Alguns nodes falharam na instalação:", failed);
+        showNotification(`${summary.failed} nodes precisam ser instalados manualmente`, "warn");
+        
+        // Mostrar instruções no console para nodes que falharam
+        failed.forEach(node => {
+          if (node.instructions) {
+            console.log(`📋 Instruções para ${node.package}:`);
+            node.instructions.forEach(instruction => console.log(instruction));
+          }
+        });
+      }
+      
+      // Atualizar status dos nodes
+      await checkNodesStatus();
+    } else {
+      showNotification("Erro ao instalar nodes: " + result.error, "error");
+    }
+  } catch (error) {
+    console.error("❌ Erro ao instalar nodes:", error);
+    showNotification("Erro ao instalar nodes: " + error.message, "error");
+  } finally {
+    nodesStatus.loading = false;
+  }
+}
+
+// Função para configurar workflow (clique no workflow)
+async function configureWorkflow(workflow) {
+  try {
+    console.log(`🔧 Configurando workflow: ${workflow.name} (ID: ${workflow.id})`);
+    
+    selectedWorkflowForConfig.value = workflow;
+    showNotification("Analisando configurações do workflow...", "info");
+    
+    // Analisar configuração do workflow
+    const response = await fetch(`http://localhost:3001/api/workflow/${workflow.id}/analyze`, {
+      headers: getAuthHeaders(),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      workflowAnalysis.value = result.analysis;
+      showWorkflowConfigModal.value = true;
+      
+      console.log("📊 Análise do workflow:", result.analysis);
+      showNotification("Análise concluída! Configurações disponíveis.", "success");
+    } else {
+      showNotification("Erro ao analisar workflow: " + result.error, "error");
+    }
+  } catch (error) {
+    console.error("❌ Erro ao configurar workflow:", error);
+    showNotification("Erro ao configurar workflow: " + error.message, "error");
+  }
+}
+
+// Função para salvar prompt estruturado
+async function saveStructuredPrompt(promptStructure) {
+  try {
+    if (!selectedWorkflowForConfig.value) {
+      showNotification("Nenhum workflow selecionado", "error");
+      return;
+    }
+    
+    showNotification("Salvando prompt estruturado...", "info");
+    
+    const response = await fetch(`http://localhost:3001/api/workflow/${selectedWorkflowForConfig.value.id}/prompt`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ promptStructure }),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showNotification("Prompt estruturado salvo com sucesso!", "success");
+      
+      // Atualizar análise do workflow
+      await configureWorkflow(selectedWorkflowForConfig.value);
+    } else {
+      showNotification("Erro ao salvar prompt: " + result.error, "error");
+    }
+  } catch (error) {
+    console.error("❌ Erro ao salvar prompt estruturado:", error);
+    showNotification("Erro ao salvar prompt: " + error.message, "error");
+  }
+}
+
+// Função para atualizar credencial de um node
+async function updateNodeCredential(nodeId, credentialType, credentialData) {
+  try {
+    if (!selectedWorkflowForConfig.value) {
+      showNotification("Nenhum workflow selecionado", "error");
+      return;
+    }
+    
+    showNotification("Atualizando credencial...", "info");
+    
+    const response = await fetch(`http://localhost:3001/api/workflow/${selectedWorkflowForConfig.value.id}/node/${nodeId}/credentials`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ credentialType, credentialData }),
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showNotification("Credencial atualizada com sucesso!", "success");
+      
+      // Atualizar análise do workflow
+      await configureWorkflow(selectedWorkflowForConfig.value);
+    } else {
+      showNotification("Erro ao atualizar credencial: " + result.error, "error");
+    }
+  } catch (error) {
+    console.error("❌ Erro ao atualizar credencial:", error);
+    showNotification("Erro ao atualizar credencial: " + error.message, "error");
+  }
+}
+
+// Estado para armazenar dados de credenciais temporariamente
+const credentialFormData = ref({});
+
+// Função para obter dados de credencial
+function getCredentialData(nodeId, credType, field) {
+  if (!credentialFormData.value[nodeId]) {
+    credentialFormData.value[nodeId] = {};
+  }
+  if (!credentialFormData.value[nodeId][credType]) {
+    credentialFormData.value[nodeId][credType] = {};
+  }
+  return credentialFormData.value[nodeId][credType][field] || '';
+}
+
+// Função para definir dados de credencial
+function setCredentialData(nodeId, credType, field, value) {
+  if (!credentialFormData.value[nodeId]) {
+    credentialFormData.value[nodeId] = {};
+  }
+  if (!credentialFormData.value[nodeId][credType]) {
+    credentialFormData.value[nodeId][credType] = {};
+  }
+  credentialFormData.value[nodeId][credType][field] = value;
+}
+
+// Função para obter dados completos da credencial
+function getCredentialFormData(nodeId, credType) {
+  return credentialFormData.value[nodeId]?.[credType] || {};
+}
+
+// Função para gerar preview do prompt
+function generatePromptPreview() {
+  if (!workflowAnalysis.value?.promptStructure) return '';
+  
+  const structure = workflowAnalysis.value.promptStructure;
+  let preview = '';
+  
+  if (structure.personalidade) {
+    preview += `**PERSONALIDADE:**\n${structure.personalidade}\n\n`;
+  }
+  
+  if (structure.papel) {
+    preview += `**PAPEL:**\n${structure.papel}\n\n`;
+  }
+  
+  if (structure.mensagemBoasVindas) {
+    preview += `**MENSAGEM DE BOAS-VINDAS:**\n${structure.mensagemBoasVindas}\n\n`;
+  }
+  
+  if (structure.mensagemFinalizacao) {
+    preview += `**MENSAGEM QUANDO FINALIZAR UM ATENDIMENTO:**\n${structure.mensagemFinalizacao}\n\n`;
+  }
+  
+  if (structure.configuracoesPadrao) {
+    preview += `**CONFIGURAÇÕES PADRÃO:**\n`;
+    if (structure.configuracoesPadrao.exibirHoraData) {
+      preview += `- Sempre exibir hora e data atual nas respostas\n`;
+    }
+    if (structure.configuracoesPadrao.identificarNumeroCliente) {
+      preview += `- Sempre identificar o número do cliente quando disponível\n`;
+    }
+  }
+  
+  return preview || 'Configure as seções acima para ver o prompt gerado.';
+}
+
+// Função para salvar todas as configurações
+async function saveAllConfigurations() {
+  try {
+    showNotification("Salvando todas as configurações...", "info");
+    
+    // 1. Salvar prompt estruturado
+    if (workflowAnalysis.value?.promptStructure?.personalidade) {
+      await saveStructuredPrompt(workflowAnalysis.value.promptStructure);
+    }
+    
+    // 2. Salvar credenciais que foram preenchidas
+    for (const node of workflowAnalysis.value.nodesRequiringCredentials) {
+      for (const credType of node.credentials) {
+        const credData = getCredentialFormData(node.id, credType);
+        if (Object.keys(credData).length > 0 && Object.values(credData).some(v => v)) {
+          await updateNodeCredential(node.id, credType, credData);
+        }
+      }
+    }
+    
+    showNotification("Todas as configurações foram salvas!", "success");
+  } catch (error) {
+    console.error("❌ Erro ao salvar configurações:", error);
+    showNotification("Erro ao salvar algumas configurações: " + error.message, "error");
+  }
+}
+
+// Função para salvar configuração manual do N8N
 async function saveManualApiKey() {
   if (!manualApiKey.value.trim()) {
     showNotification("Por favor, insira uma API Key válida.", "warn");
     return;
   }
 
+  // Debug: Verificar se o token existe
+  const token = localStorage.getItem("authToken");
+  console.log("🔍 Token de autenticação:", token ? "Existe" : "Não encontrado");
+
+  if (!instanceUrl.value.trim()) {
+    showNotification("Por favor, insira o endereço da instância N8N.", "warn");
+    return;
+  }
+
   try {
-    // Primeiro testar a nova API Key diretamente no n8n
-    const n8nResponse = await fetch("http://localhost:5678/api/v1/credentials", {
+    // Primeiro testar a nova API Key na instância fornecida
+    const testResponse = await fetch("http://localhost:3001/api/n8n/test-api-key", {
       method: "POST",
       headers: {
-        "X-N8N-API-KEY": manualApiKey.value,
         "Content-Type": "application/json",
       },
+      body: JSON.stringify({ 
+        apiKey: manualApiKey.value,
+        instanceUrl: instanceUrl.value 
+      }),
     });
 
-    // Se retornar 405 (Method Not Allowed) ou 400 (Bad Request), significa que a API key está correta
-    // mas o endpoint não aceita POST sem body ou espera dados específicos
-    if (n8nResponse.status === 405 || n8nResponse.status === 400) {
-      // Sincronizar a API key com o backend
+    const testResult = await testResponse.json();
+
+    if (testResult.success) {
+      // Se a API Key for válida, sincronizar com o backend
       const backendResponse = await fetch("http://localhost:3001/api/n8n/sync-api-key", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...getAuthHeaders(),
         },
         body: JSON.stringify({
           apiKey: manualApiKey.value,
+          instanceUrl: instanceUrl.value,
         }),
       });
 
@@ -410,13 +798,15 @@ async function saveManualApiKey() {
 
         // Carregar workflows após configurar a API Key
         await loadWorkflows();
+        
+        // Verificar status dos nodes após configurar N8N
+        await checkNodesStatus();
       } else {
         showNotification("Erro ao sincronizar API Key com o backend.", "error");
       }
-    } else if (n8nResponse.status === 401) {
-      showNotification("API Key inválida. Verifique e tente novamente.", "error");
     } else {
-      showNotification("Erro ao testar API Key. Status: " + n8nResponse.status, "error");
+      // API Key inválida
+      showNotification(`Erro ao validar API Key: ${testResult.error}`, "error");
     }
   } catch (error) {
     console.error("Erro ao testar API Key:", error);
@@ -438,10 +828,7 @@ async function loadWorkflows() {
 
   try {
     const response = await fetch("http://localhost:3001/api/db/workflows", {
-      headers: {
-        "x-api-key": API_KEY,
-        "Content-Type": "application/json",
-      },
+      headers: getAuthHeaders(),
     });
     const result = await response.json();
     if (!result.success) throw new Error(result.error);
@@ -464,10 +851,7 @@ async function syncWorkflows() {
   try {
     await fetch("http://localhost:3001/api/sync-n8n-to-db", {
       method: "POST",
-      headers: {
-        "x-api-key": API_KEY,
-        "Content-Type": "application/json",
-      },
+      headers: getAuthHeaders(),
     });
     await loadWorkflows();
     showNotification("Sincronizado com sucesso!", "success");
@@ -480,10 +864,7 @@ async function selectWorkflow(workflowId) {
   currentWorkflow.value = null;
   try {
     const response = await fetch(`http://localhost:3001/api/db/workflows/${workflowId}`, {
-      headers: {
-        "x-api-key": API_KEY,
-        "Content-Type": "application/json",
-      },
+      headers: getAuthHeaders(),
     });
     const result = await response.json();
     if (!result.success) throw new Error(result.error);
@@ -503,6 +884,8 @@ function openConfigModal(type) {
     configCredentialsForm.gemini = { ...creds };
   } else if (type === "googleSheets") {
     configCredentialsForm.googleSheets = { ...creds };
+  } else if (type === "evolution") {
+    configCredentialsForm.evolution = { ...creds };
   }
   showConfigModal.value = true;
 }
@@ -541,10 +924,7 @@ async function saveAgentPrompt() {
       `http://localhost:3001/api/db/agents/${editingAgentId.value}/sync-n8n`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": API_KEY,
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           prompt: tempPrompt.value,
           workflowId: currentWorkflow.value.id,
@@ -618,11 +998,8 @@ async function createNewAgent() {
 
     const response = await fetch("http://localhost:3001/api/create-workflow-with-credentials", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-      },
-      body: JSON.stringify(workflowData),
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ ...workflowData, templateType: selectedTemplate.value }),
     });
 
     if (!response.ok) {
@@ -661,10 +1038,7 @@ async function saveCredentials() {
     // 1. Salvar credenciais no banco local
     await fetch(`http://localhost:3001/api/db/credentials/${currentWorkflow.value.id}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-      },
+      headers: getAuthHeaders(),
       body: JSON.stringify(configCredentialsForm),
     });
 
@@ -720,6 +1094,19 @@ async function updateN8nCredentials() {
       );
     }
 
+    // Atualizar Evolution API se configurado
+    if (
+      configCredentialsForm.evolution.baseUrl &&
+      configCredentialsForm.evolution.apiKey
+    ) {
+      updatePromises.push(
+        updateN8nCredential("evolution", {
+          baseUrl: configCredentialsForm.evolution.baseUrl,
+          apiKey: configCredentialsForm.evolution.apiKey,
+        })
+      );
+    }
+
     await Promise.all(updatePromises);
     console.log("Todas as credenciais foram atualizadas no n8n");
   } catch (error) {
@@ -732,10 +1119,7 @@ async function updateN8nCredentials() {
 async function updateN8nCredential(type, data) {
   const response = await fetch(`http://localhost:3001/api/update-n8n-credential`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": API_KEY,
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify({
       workflowId: currentWorkflow.value.id,
       credentialType: type,
@@ -797,10 +1181,7 @@ async function deleteWorkflow(workflowId, workflowName) {
   try {
     const response = await fetch(`http://localhost:3001/api/db/workflows/${workflowId}`, {
       method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-      },
+      headers: getAuthHeaders(),
     });
 
     if (!response.ok) {
@@ -844,102 +1225,15 @@ function truncateText(text, maxLength) {
 
 // ===== FUNÇÕES DE GESTÃO DE CLIENTES MULTI-TENANT =====
 
-async function loadClients() {
-  try {
-    // TODO: Implementar endpoints de clientes no backend
-    // const response = await fetch("http://localhost:3001/api/clients");
-    // const result = await response.json();
-    // if (!result.success) throw new Error(result.error);
-    // clients.value = result.data;
-    clients.value = []; // Temporariamente vazio até implementar
-  } catch (error) {
-    showNotification(`Erro ao carregar clientes: ${error.message}`, "error");
-  }
-}
+// Removido: loadClients
 
-function openCreateClientModal() {
-  newClientForm.clientName = "";
-  newClientForm.clientEmail = "";
-  showClientModal.value = true;
-}
+// Removido: openCreateClientModal
 
-async function createClient() {
-  if (!newClientForm.clientName || !newClientForm.clientEmail) {
-    showNotification("Nome e email do cliente são obrigatórios", "error");
-    return;
-  }
+// Removido: createClient
 
-  isProvisioningClient.value = true;
+// Removido: stopClient
 
-  try {
-    showNotification("Provisionando nova instância...", "info");
-
-    // TODO: Implementar endpoint de provisionamento no backend
-    // const response = await fetch("http://localhost:3001/api/clients/provision", {
-    //   method: "POST",
-    //   headers: { "Content-Type": "application/json" },
-    //   body: JSON.stringify({
-    //     clientName: newClientForm.clientName,
-    //     clientEmail: newClientForm.clientEmail,
-    //   }),
-    // });
-
-    // const result = await response.json();
-
-    // if (!result.success) throw new Error(result.error);
-
-    // showNotification(`Cliente ${result.data.clientName} provisionado com sucesso!`, "success");
-    showNotification("Funcionalidade de provisionamento será implementada em breve!", "info");
-    showClientModal.value = false;
-    await loadClients();
-  } catch (error) {
-    showNotification(`Erro no provisionamento: ${error.message}`, "error");
-  } finally {
-    isProvisioningClient.value = false;
-  }
-}
-
-async function stopClient(clientId) {
-  try {
-    showNotification("Parando instância...", "info");
-    // TODO: Implementar endpoint de parar cliente no backend
-    // const response = await fetch(`http://localhost:3001/api/clients/${clientId}/stop`, {
-    //   method: "POST",
-    // });
-    // const result = await response.json();
-
-    // if (!result.success) throw new Error(result.error);
-
-    // showNotification("Instância parada com sucesso", "success");
-    showNotification("Funcionalidade será implementada em breve!", "info");
-    await loadClients();
-  } catch (error) {
-    showNotification(`Erro ao parar instância: ${error.message}`, "error");
-  }
-}
-
-async function removeClient(clientId) {
-  if (!confirm("Tem certeza que deseja remover esta instância? Esta ação não pode ser desfeita.")) {
-    return;
-  }
-
-  try {
-    showNotification("Removendo instância...", "info");
-    // TODO: Implementar endpoint de remover cliente no backend
-    // const response = await fetch(`http://localhost:3001/api/clients/${clientId}`, {
-    //   method: "DELETE",
-    // });
-    // const result = await response.json();
-
-    // if (!result.success) throw new Error(result.error);
-
-    // showNotification("Instância removida com sucesso", "success");
-    showNotification("Funcionalidade será implementada em breve!", "info");
-    await loadClients();
-  } catch (error) {
-    showNotification(`Erro ao remover instância: ${error.message}`, "error");
-  }
-}
+// Removido: removeClient
 
 // Computed para títulos dinâmicos
 const pageTitle = computed(() => {
@@ -947,7 +1241,7 @@ const pageTitle = computed(() => {
     case "workflows":
       return "Workflows & Agentes IA";
     case "clients":
-      return "Clientes Multi-Tenant";
+      return "";
     case "settings":
       return "Configurações";
     case "qrcode":
@@ -962,7 +1256,7 @@ const pageDescription = computed(() => {
     case "workflows":
       return "Gerencie workflows do n8n e configure agentes IA";
     case "clients":
-      return "Provisione e gerencie instâncias isoladas para clientes";
+      return "";
     case "settings":
       return "Configurações gerais do sistema";
     case "qrcode":
@@ -982,7 +1276,7 @@ const pageDescription = computed(() => {
         <template #header>
           <div class="flex align-items-center gap-2">
             <i class="pi pi-th-large text-primary"></i>
-            <span class="font-semibold">Multi-Tenant SaaS</span>
+            <span class="font-semibold">CriarD SaaS</span>
           </div>
         </template>
         <div class="flex flex-column gap-2">
@@ -993,14 +1287,6 @@ const pageDescription = computed(() => {
             :severity="currentPage === 'workflows' ? 'primary' : 'secondary'"
             :text="currentPage !== 'workflows'"
             @click="navigateToPage('workflows')"
-          />
-          <Button
-            label="Clientes"
-            icon="pi pi-users"
-            class="w-full justify-content-start"
-            :severity="currentPage === 'clients' ? 'primary' : 'secondary'"
-            :text="currentPage !== 'clients'"
-            @click="navigateToPage('clients')"
           />
           <Button
             label="Configurações"
@@ -1031,14 +1317,7 @@ const pageDescription = computed(() => {
               <p class="text-600 m-0 mt-1">{{ pageDescription }}</p>
             </div>
             <div class="flex gap-2">
-              <Button
-                v-if="currentPage === 'clients'"
-                label="Novo Cliente"
-                icon="pi pi-building"
-                @click="openCreateClientModal"
-                severity="success"
-                size="large"
-              />
+              <!-- Removido botão de clientes -->
               <Button
                 v-if="currentPage === 'workflows'"
                 label="Criar Agente"
@@ -1055,7 +1334,7 @@ const pageDescription = computed(() => {
           <!-- PÁGINA DE WORKFLOWS -->
           <div v-if="currentPage === 'workflows'" class="grid gap-3">
             <!-- Lista de Workflows -->
-            <div class="col-12 lg:col-4">
+            <div class="col-12 lg:col-4 w-full">
               <Card class="h-full">
                 <template #header>
                   <div class="p-3 border-bottom-1 surface-border">
@@ -1108,7 +1387,7 @@ const pageDescription = computed(() => {
                       :class="{
                         'border-primary': currentWorkflow && currentWorkflow.id === workflow.id,
                       }"
-                      @click="selectWorkflow(workflow.id)"
+                      @click="configureWorkflow(workflow)"
                     >
                       <template #content>
                         <div class="flex justify-content-between align-items-start">
@@ -1152,7 +1431,7 @@ const pageDescription = computed(() => {
             </div>
 
             <!-- Detalhes do Workflow -->
-            <div class="col-12 lg:col-8">
+            <div class="col-12 lg:col-8 w-full">
               <div
                 v-if="!currentWorkflow"
                 class="flex flex-column align-items-center justify-content-center"
@@ -1378,6 +1657,31 @@ const pageDescription = computed(() => {
                         </template>
                       </Card>
                     </div>
+
+                    <div class="flex-1">
+                      <Card
+                        class="cursor-pointer h-full border-1 surface-border hover:border-primary"
+                        @click="openConfigModal('evolution')"
+                      >
+                        <template #content>
+                          <div class="text-center p-2">
+                            <i class="pi pi-send text-2xl text-cyan-500 mb-2 block"></i>
+                            <h5 class="font-semibold text-900 mb-2 text-sm">Evolution API</h5>
+                            <span
+                              class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round"
+                              :class="
+                                evolutionConfigured
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-orange-100 text-orange-800'
+                              "
+                            >
+                              <i :class="evolutionConfigured ? 'pi pi-check-circle' : 'pi pi-exclamation-triangle'"></i>
+                              {{ evolutionConfigured ? 'OK' : 'Config' }}
+                            </span>
+                          </div>
+                        </template>
+                      </Card>
+                    </div>
                   </div>
                 </Panel>
               </div>
@@ -1562,7 +1866,27 @@ const pageDescription = computed(() => {
                                 </div>
 
                                 <div v-else-if="n8nStatus.online" class="mb-3">
-                                  <p class="text-600 text-sm mb-2">Conectado a: localhost:5678</p>
+                                  <div class="flex justify-content-between align-items-center mb-2">
+                                    <p class="text-600 text-sm m-0">Conectado a: {{ instanceUrl }}</p>
+                                    <div class="flex gap-1">
+                                      <Button
+                                        icon="pi pi-refresh"
+                                        severity="secondary"
+                                        size="small"
+                                        class="p-button-sm p-button-rounded"
+                                        @click="syncN8nConfiguration"
+                                        v-tooltip.left="'Sincronizar'"
+                                      />
+                                      <Button
+                                        icon="pi pi-trash"
+                                        severity="danger"
+                                        size="small"
+                                        class="p-button-sm p-button-rounded"
+                                        @click="removeN8nConnection"
+                                        v-tooltip.left="'Remover conexão'"
+                                      />
+                                    </div>
+                                  </div>
                                   <span
                                     class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-green-100 text-green-800"
                                   >
@@ -1572,31 +1896,74 @@ const pageDescription = computed(() => {
                                 </div>
 
                                 <div v-else-if="n8nStatus.authError" class="mb-3">
-                                  <p class="text-600 text-sm mb-2">API Key incorreta</p>
+                  <p class="text-600 text-sm mb-2">API Key necessária</p>
                                   <span
                                     class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-orange-100 text-orange-800"
                                   >
                                     <i class="pi pi-exclamation-triangle"></i>
-                                    Erro de Autenticação
+                    Configuração Necessária
                                   </span>
+                  
+                  <!-- Instruções detalhadas -->
+                  <div class="mt-3 p-3 border-1 surface-border border-round bg-blue-50">
+                    <div class="flex align-items-start gap-2 mb-2">
+                      <i class="pi pi-info-circle text-blue-500 mt-1"></i>
+                      <div>
+                        <p class="text-sm font-semibold text-900 mb-1">Como configurar sua instância N8N:</p>
+                        <ol class="text-xs text-600 m-0 pl-3">
+                          <li class="mb-1">Insira o <strong>endereço da sua instância N8N</strong><br/>
+                            • Local: http://localhost:5678<br/>
+                            • Externa: https://n8n.meudominio.com<br/>
+                            • N8N Cloud: https://app.n8n.cloud</li>
+                          <li class="mb-1">Acesse sua instância N8N</li>
+                          <li class="mb-1">Faça login ou configure sua conta</li>
+                          <li class="mb-1">Vá em <strong>Settings → n8n API</strong></li>
+                          <li class="mb-1">Clique em <strong>"Create an API Key"</strong></li>
+                          <li class="mb-1">Copie a API Key gerada</li>
+                          <li>Cole a API Key no campo abaixo e clique em "Testar & Salvar"</li>
+                        </ol>
+                      </div>
+                    </div>
+                  </div>
+
                                   <div class="mt-3">
-                                    <div class="flex flex-column gap-2">
+                    <div class="flex flex-column gap-3">
+                      <FloatLabel>
+                        <InputText
+                          v-model="instanceUrl"
+                          placeholder="Ex: https://n8n.meudominio.com ou http://localhost:5678"
+                          class="w-full"
+                        />
+                      </FloatLabel>
+                      
                                       <FloatLabel>
                                         <InputText
                                           v-model="manualApiKey"
-                                          placeholder="Insira a API Key do n8n"
+                          placeholder="Cole aqui a API Key gerada no N8N"
                                           class="w-full"
                                           type="password"
                                         />
-                                        <label>API Key do n8n</label>
                                       </FloatLabel>
+                      
+                      <div class="flex gap-2">
                                       <Button
-                                        label="Salvar API Key"
+                          label="Abrir N8N"
+                          icon="pi pi-external-link"
+                          size="small"
+                          severity="secondary"
+                          outlined
+                          @click="window.open(instanceUrl || 'https://app.n8n.cloud', '_blank')"
+                          class="p-button-sm flex-1"
+                        />
+                        <Button
+                          label="Testar & Salvar"
                                         icon="pi pi-key"
                                         size="small"
                                         @click="saveManualApiKey"
-                                        class="p-button-sm"
+                          class="p-button-sm flex-1"
+                          :disabled="!manualApiKey.trim() || !instanceUrl.trim()"
                                       />
+                      </div>
                                     </div>
                                   </div>
                                 </div>
@@ -1611,11 +1978,12 @@ const pageDescription = computed(() => {
                                   </span>
                                   <div class="mt-2">
                                     <Button
-                                      label="Configurar n8n"
-                                      icon="pi pi-cog"
+                                      icon="pi pi-times"
+                                      severity="danger"
                                       size="small"
-                                      @click="configureN8n"
-                                      class="p-button-sm"
+                                      class="p-button-sm p-button-rounded"
+                                      @click="resetN8nConnection"
+                                      v-tooltip.left="'Encerrar conexão e tentar novamente'"
                                     />
                                   </div>
                                 </div>
@@ -1649,16 +2017,7 @@ const pageDescription = computed(() => {
                         <i class="pi pi-chart-bar mr-2 text-primary"></i>
                         Estatísticas
                       </h3>
-                      <div class="grid">
-                        <div class="col-12 sm:col-6 md:col-3">
-                          <Card class="border-1 surface-border text-center">
-                            <template #content>
-                              <i class="pi pi-users text-2xl text-blue-500 mb-2"></i>
-                              <h4 class="text-xl font-bold text-900 mb-1">{{ clients.length }}</h4>
-                              <p class="text-600 text-sm m-0">Clientes Ativos</p>
-                            </template>
-                          </Card>
-                        </div>
+                      <div class="grid justify-content-center">
                         <div class="col-12 sm:col-6 md:col-3">
                           <Card class="border-1 surface-border text-center">
                             <template #content>
@@ -1674,9 +2033,7 @@ const pageDescription = computed(() => {
                           <Card class="border-1 surface-border text-center">
                             <template #content>
                               <i class="pi pi-server text-2xl text-purple-500 mb-2"></i>
-                              <h4 class="text-xl font-bold text-900 mb-1">
-                                {{ clients.length * 2 }}
-                              </h4>
+                              <h4 class="text-xl font-bold text-900 mb-1">{{ workflows.length }}</h4>
                               <p class="text-600 text-sm m-0">Instâncias Ativas</p>
                             </template>
                           </Card>
@@ -1915,10 +2272,31 @@ const pageDescription = computed(() => {
       v-model:visible="showCreateAgentModal"
       modal
       header="Criar Novo Agente e Workflow"
-      :style="{ width: '50rem' }"
+      :style="{ width: '55rem' }"
       :breakpoints="{ '1199px': '75vw', '575px': '90vw' }"
     >
       <div class="flex flex-column gap-4">
+        <!-- Seleção de Template de Agente -->
+        <div>
+          <h4 class="font-semibold text-900 m-0 mb-2">Escolha um modelo de agente</h4>
+          <div class="grid">
+            <div v-for="tpl in agentTemplates" :key="tpl.key" class="col-12 md:col-6">
+              <Card class="h-full cursor-pointer border-2 surface-border template-card"
+                    :class="{ 'template-selected': selectedTemplate === tpl.key }"
+                    @click="selectedTemplate = tpl.key">
+                <template #content>
+                  <div class="flex align-items-start justify-content-between">
+                    <div class="mr-3">
+                      <h5 class="font-semibold text-900 m-0">{{ tpl.title }}</h5>
+                      <p class="text-600 text-sm m-0">{{ tpl.desc }}</p>
+                    </div>
+                    <i :class="selectedTemplate === tpl.key ? 'pi pi-check-circle text-green-600' : 'pi pi-circle'" />
+                  </div>
+                </template>
+              </Card>
+            </div>
+          </div>
+        </div>
         <FloatLabel>
           <InputText id="workflowName" v-model="newAgentForm.workflowName" class="w-full" />
           <label for="workflowName">Nome do Workflow</label>
@@ -1926,7 +2304,7 @@ const pageDescription = computed(() => {
 
         <Divider />
 
-        <h4 class="font-semibold text-900 mb-0">Configurações Iniciais</h4>
+        <h4 class="font-semibold text-900 mb-0">Credenciais Iniciais</h4>
 
         <div class="grid">
           <div class="col-12 md:col-6">
@@ -1972,7 +2350,7 @@ const pageDescription = computed(() => {
 
       <template #footer>
         <Button label="Cancelar" severity="secondary" @click="showCreateAgentModal = false" />
-        <Button label="Criar" icon="pi pi-check" @click="createNewAgent" />
+        <Button label="Criar" icon="pi pi-check" :disabled="!selectedTemplate" :severity="selectedTemplate ? 'success' : 'secondary'" @click="createNewAgent" />
       </template>
     </Dialog>
 
@@ -2075,6 +2453,34 @@ const pageDescription = computed(() => {
         </div>
       </div>
 
+      <!-- Formulário Evolution API -->
+      <div v-if="editingCredentialType === 'evolution'" class="flex flex-column gap-4">
+        <div class="flex align-items-center gap-2 mb-3">
+          <i class="pi pi-send text-cyan-500 text-2xl"></i>
+          <h4 class="font-semibold text-900 m-0">Configurações da Evolution API</h4>
+        </div>
+
+        <FloatLabel>
+          <InputText
+            id="evolutionBaseUrl"
+            v-model="configCredentialsForm.evolution.baseUrl"
+            class="w-full"
+            placeholder="http://localhost:8080"
+          />
+          <label for="evolutionBaseUrl">Base URL</label>
+        </FloatLabel>
+
+        <FloatLabel>
+          <InputText
+            id="evolutionApiKey"
+            v-model="configCredentialsForm.evolution.apiKey"
+            class="w-full"
+            type="password"
+          />
+          <label for="evolutionApiKey">API Key</label>
+        </FloatLabel>
+      </div>
+
       <template #footer>
         <Button label="Cancelar" severity="secondary" @click="showConfigModal = false" />
         <Button label="Salvar" icon="pi pi-check" @click="saveCredentials" />
@@ -2159,7 +2565,7 @@ const pageDescription = computed(() => {
       <div class="flex flex-column gap-4">
         <div class="flex align-items-center gap-2 mb-2">
           <i class="pi pi-building text-primary text-xl"></i>
-          <h4 class="font-semibold text-900 m-0">Nova Instância Multi-Tenant</h4>
+          <h4 class="font-semibold text-900 m-0">Nova Instância CriarDAgents</h4>
         </div>
 
         <p class="text-600 text-sm mb-3">
@@ -2226,6 +2632,353 @@ const pageDescription = computed(() => {
       </template>
     </Dialog>
   </div>
+
+  <!-- Modal de Configuração de Workflow -->
+  <Dialog 
+    v-model:visible="showWorkflowConfigModal" 
+    modal 
+    header="Configuração de Workflow"
+    :style="{ width: '90vw', maxWidth: '1200px' }"
+    :dismissableMask="false"
+  >
+    <div v-if="workflowAnalysis" class="workflow-config-container">
+      
+      <!-- Header com informações do workflow -->
+      <div class="border-bottom-1 surface-border pb-3 mb-4">
+        <h2 class="text-2xl font-bold text-900 mb-2">{{ workflowAnalysis.workflowName }}</h2>
+        <div class="flex gap-3">
+          <Chip :label="`${workflowAnalysis.nodesRequiringCredentials.length} credenciais`" icon="pi pi-key" />
+          <Chip :label="`${workflowAnalysis.aiAgentNodes.length} AI agents`" icon="pi pi-android" />
+          <Chip v-if="workflowAnalysis.webhookConfig" label="Webhook configurado" icon="pi pi-link" />
+        </div>
+      </div>
+
+      <!-- Tabs para organizar configurações -->
+      <TabView>
+        
+        <!-- Tab 1: Prompt Estruturado -->
+        <TabPanel header="Prompt do Agente" leftIcon="pi pi-comment">
+          <div class="prompt-editor">
+            <h3 class="text-lg font-semibold mb-3">Configure o Comportamento do Agente</h3>
+            
+            <div class="grid">
+              <div class="col-12 md:col-6">
+                <!-- Personalidade -->
+                <div class="field">
+                  <label class="block font-medium mb-2">
+                    <i class="pi pi-user mr-2"></i>Personalidade
+                  </label>
+                  <Textarea
+                    v-model="workflowAnalysis.promptStructure.personalidade"
+                    rows="3"
+                    class="w-full"
+                    placeholder="Ex: Atenciosa, prestativa, profissional..."
+                  />
+                </div>
+
+                <!-- Papel -->
+                <div class="field">
+                  <label class="block font-medium mb-2">
+                    <i class="pi pi-briefcase mr-2"></i>Papel
+                  </label>
+                  <Textarea
+                    v-model="workflowAnalysis.promptStructure.papel"
+                    rows="3"
+                    class="w-full"
+                    placeholder="Ex: Assistente virtual de vendas, suporte técnico..."
+                  />
+                </div>
+              </div>
+
+              <div class="col-12 md:col-6">
+                <!-- Mensagem de Boas-vindas -->
+                <div class="field">
+                  <label class="block font-medium mb-2">
+                    <i class="pi pi-heart mr-2"></i>Mensagem de Boas-vindas
+                  </label>
+                  <Textarea
+                    v-model="workflowAnalysis.promptStructure.mensagemBoasVindas"
+                    rows="3"
+                    class="w-full"
+                    placeholder="Ex: Olá! Como posso ajudá-lo hoje?"
+                  />
+                </div>
+
+                <!-- Mensagem de Finalização -->
+                <div class="field">
+                  <label class="block font-medium mb-2">
+                    <i class="pi pi-check-circle mr-2"></i>Mensagem de Finalização
+                  </label>
+                  <Textarea
+                    v-model="workflowAnalysis.promptStructure.mensagemFinalizacao"
+                    rows="3"
+                    class="w-full"
+                    placeholder="Ex: Foi um prazer ajudá-lo! Tenha um ótimo dia!"
+                  />
+                </div>
+              </div>
+
+              <!-- Configurações Padrão -->
+              <div class="col-12">
+                <div class="field">
+                  <label class="block font-medium mb-3">
+                    <i class="pi pi-cog mr-2"></i>Configurações Padrão
+                  </label>
+                  <div class="flex gap-4">
+                    <div class="flex align-items-center">
+                      <Checkbox 
+                        v-model="workflowAnalysis.promptStructure.configuracoesPadrao.exibirHoraData" 
+                        inputId="showDateTime" 
+                        binary 
+                      />
+                      <label for="showDateTime" class="ml-2">Exibir hora e data</label>
+                    </div>
+                    <div class="flex align-items-center">
+                      <Checkbox 
+                        v-model="workflowAnalysis.promptStructure.configuracoesPadrao.identificarNumeroCliente" 
+                        inputId="showClientNumber" 
+                        binary 
+                      />
+                      <label for="showClientNumber" class="ml-2">Identificar número do cliente</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Preview do Prompt -->
+            <Accordion class="mt-4">
+              <AccordionTab header="Visualizar Prompt Gerado">
+                <div class="bg-gray-50 p-3 border-round">
+                  <pre class="text-sm line-height-3">{{ generatePromptPreview() }}</pre>
+                </div>
+              </AccordionTab>
+            </Accordion>
+
+            <!-- Botão para salvar prompt -->
+            <div class="text-right mt-4">
+              <Button 
+                label="Salvar Prompt" 
+                icon="pi pi-save" 
+                @click="saveStructuredPrompt(workflowAnalysis.promptStructure)"
+                :disabled="!workflowAnalysis.promptStructure.personalidade"
+              />
+            </div>
+          </div>
+        </TabPanel>
+
+        <!-- Tab 2: Credenciais -->
+        <TabPanel header="Credenciais" leftIcon="pi pi-key">
+          <div class="credentials-config">
+            <h3 class="text-lg font-semibold mb-3">Configure as Credenciais dos Nodes</h3>
+            
+            <div v-if="workflowAnalysis.nodesRequiringCredentials.length === 0" class="text-center py-6">
+              <i class="pi pi-check-circle text-6xl text-green-500 mb-3"></i>
+              <p class="text-xl text-600">Todas as credenciais estão configuradas!</p>
+            </div>
+
+            <div v-else class="grid">
+              <div 
+                v-for="node in workflowAnalysis.nodesRequiringCredentials" 
+                :key="node.id"
+                class="col-12 md:col-6"
+              >
+                <Card class="h-full">
+                  <template #header>
+                    <div class="bg-primary-50 p-3">
+                      <h4 class="font-semibold text-primary m-0">
+                        <i class="pi pi-sitemap mr-2"></i>{{ node.name }}
+                      </h4>
+                      <small class="text-primary-600">{{ node.type }}</small>
+  </div>
+                  </template>
+                  
+                  <template #content>
+                    <div v-for="credType in node.credentials" :key="credType" class="mb-3">
+                      <div class="flex justify-content-between align-items-center mb-2">
+                        <label class="font-medium">{{ credType }}</label>
+                        <Badge 
+                          :value="node.currentCredentials[credType] ? 'Configurado' : 'Pendente'" 
+                          :severity="node.currentCredentials[credType] ? 'success' : 'warning'"
+                        />
+                      </div>
+                      
+                      <!-- Formulário dinâmico baseado no tipo de credencial -->
+                      <div v-if="credType === 'chatwootApi'" class="grid">
+                        <div class="col-12">
+                          <label class="block text-sm font-medium mb-1">URL da API</label>
+                          <InputText 
+                            :value="getCredentialData(node.id, credType, 'baseUrl')"
+                            @input="setCredentialData(node.id, credType, 'baseUrl', $event.target.value)"
+                            placeholder="https://app.chatwoot.com"
+                            class="w-full"
+                          />
+                        </div>
+                        <div class="col-12">
+                          <label class="block text-sm font-medium mb-1">Access Token</label>
+                          <InputText 
+                            :value="getCredentialData(node.id, credType, 'accessToken')"
+                            @input="setCredentialData(node.id, credType, 'accessToken', $event.target.value)"
+                            placeholder="sua_api_key_aqui"
+                            class="w-full"
+                            type="password"
+                          />
+                        </div>
+                      </div>
+
+                      <div v-else-if="credType === 'googleGenerativeAiApi' || credType === 'googlePalmApi'" class="grid">
+                        <div class="col-12">
+                          <label class="block text-sm font-medium mb-1">API Key</label>
+                          <InputText 
+                            :value="getCredentialData(node.id, credType, 'apiKey')"
+                            @input="setCredentialData(node.id, credType, 'apiKey', $event.target.value)"
+                            placeholder="sua_google_api_key"
+                            class="w-full"
+                            type="password"
+                          />
+                        </div>
+                      </div>
+
+                      <div v-else-if="credType === 'googleSheetsOAuth2Api'" class="grid">
+                        <div class="col-12">
+                          <label class="block text-sm font-medium mb-1">Client ID</label>
+                          <InputText 
+                            :value="getCredentialData(node.id, credType, 'clientId')"
+                            @input="setCredentialData(node.id, credType, 'clientId', $event.target.value)"
+                            placeholder="google_client_id"
+                            class="w-full"
+                          />
+                        </div>
+                        <div class="col-12">
+                          <label class="block text-sm font-medium mb-1">Client Secret</label>
+                          <InputText 
+                            :value="getCredentialData(node.id, credType, 'clientSecret')"
+                            @input="setCredentialData(node.id, credType, 'clientSecret', $event.target.value)"
+                            placeholder="google_client_secret"
+                            class="w-full"
+                            type="password"
+                          />
+                        </div>
+                      </div>
+
+                      <!-- Botão para salvar credencial específica -->
+                      <Button 
+                        label="Atualizar" 
+                        icon="pi pi-refresh" 
+                        size="small"
+                        class="mt-2"
+                        @click="updateNodeCredential(node.id, credType, getCredentialFormData(node.id, credType))"
+                      />
+                    </div>
+                  </template>
+                </Card>
+              </div>
+            </div>
+          </div>
+        </TabPanel>
+
+        <!-- Tab 3: Configurações Avançadas -->
+        <TabPanel header="Avançado" leftIcon="pi pi-cog">
+          <div class="advanced-config">
+            <h3 class="text-lg font-semibold mb-3">Configurações Avançadas do Workflow</h3>
+            
+            <!-- Configuração do Webhook -->
+            <Card v-if="workflowAnalysis.webhookConfig" class="mb-4">
+              <template #header>
+                <div class="bg-blue-50 p-3">
+                  <h4 class="font-semibold text-blue-900 m-0">
+                    <i class="pi pi-link mr-2"></i>Webhook
+                  </h4>
+                </div>
+              </template>
+              <template #content>
+                <div class="grid">
+                  <div class="col-12 md:col-6">
+                    <label class="block font-medium mb-2">Caminho</label>
+                    <InputText 
+                      :value="workflowAnalysis.webhookConfig.path" 
+                      readonly 
+                      class="w-full"
+                    />
+                  </div>
+                  <div class="col-12 md:col-6">
+                    <label class="block font-medium mb-2">Método HTTP</label>
+                    <InputText 
+                      :value="workflowAnalysis.webhookConfig.httpMethod" 
+                      readonly 
+                      class="w-full"
+                    />
+                  </div>
+                </div>
+              </template>
+            </Card>
+
+            <!-- Configuração de Memória -->
+            <Card v-if="workflowAnalysis.memoryConfig" class="mb-4">
+              <template #header>
+                <div class="bg-purple-50 p-3">
+                  <h4 class="font-semibold text-purple-900 m-0">
+                    <i class="pi pi-database mr-2"></i>Memória
+                  </h4>
+                </div>
+              </template>
+              <template #content>
+                <p class="text-600 mb-3">Configurações de memória detectadas no workflow.</p>
+                <div class="bg-gray-50 p-3 border-round">
+                  <pre class="text-sm">{{ JSON.stringify(workflowAnalysis.memoryConfig.parameters, null, 2) }}</pre>
+                </div>
+              </template>
+            </Card>
+
+            <!-- Informações dos AI Agents -->
+            <Card v-if="workflowAnalysis.aiAgentNodes.length > 0">
+              <template #header>
+                <div class="bg-green-50 p-3">
+                  <h4 class="font-semibold text-green-900 m-0">
+                    <i class="pi pi-android mr-2"></i>AI Agents
+                  </h4>
+                </div>
+              </template>
+              <template #content>
+                <div v-for="agent in workflowAnalysis.aiAgentNodes" :key="agent.id" class="mb-3">
+                  <div class="flex justify-content-between align-items-center">
+                    <span class="font-medium">{{ agent.name }}</span>
+                    <Badge :value="agent.type" severity="info" />
+                  </div>
+                </div>
+              </template>
+            </Card>
+          </div>
+        </TabPanel>
+      </TabView>
+    </div>
+
+    <!-- Loading state -->
+    <div v-else class="text-center py-6">
+      <i class="pi pi-spin pi-spinner text-4xl text-primary mb-3"></i>
+      <p class="text-lg text-600">Analisando configurações do workflow...</p>
+    </div>
+
+    <!-- Footer do modal -->
+    <template #footer>
+      <div class="flex justify-content-between">
+        <Button 
+          label="Fechar" 
+          icon="pi pi-times" 
+          severity="secondary" 
+          @click="showWorkflowConfigModal = false"
+        />
+        <div class="flex gap-2">
+          <Button 
+            label="Salvar Todas Configurações" 
+            icon="pi pi-save" 
+            @click="saveAllConfigurations"
+            :disabled="!workflowAnalysis"
+          />
+        </div>
+      </div>
+    </template>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -2362,5 +3115,22 @@ const pageDescription = computed(() => {
 .agent-card:hover .agent-icon {
   background: #dcfce7;
   color: #16a34a;
+}
+
+/* Template cards selection state */
+.template-card {
+  border-color: #e5e7eb;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.template-card:hover {
+  border-color: #10b981;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
+  transform: translateY(-2px);
+}
+
+.template-selected {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25) inset;
 }
 </style>

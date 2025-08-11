@@ -169,8 +169,25 @@ class Database {
                 )
             `);
 
+      // --- Cria a tabela de configurações do N8N ---
+      await this.connection.execute(`
+                CREATE TABLE IF NOT EXISTS n8n_configs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT,
+                    instance_url VARCHAR(500) NOT NULL,
+                    api_key VARCHAR(500) NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    last_tested TIMESTAMP NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    INDEX idx_user_id (user_id),
+                    INDEX idx_active (is_active)
+                )
+            `);
+
       console.log(
-        "✅ Tabelas 'workflows', 'agents', 'credentials' e 'clients' verificadas/criadas com sucesso."
+        "✅ Tabelas 'workflows', 'agents', 'credentials', 'clients' e 'n8n_configs' verificadas/criadas com sucesso."
       );
     } catch (error) {
       console.error("❌ Erro ao criar as tabelas:", error);
@@ -420,6 +437,71 @@ class Database {
       }
     }
     return credentials;
+  }
+
+  // Métodos para gerenciar configurações do N8N
+  async saveN8nConfig(userId, instanceUrl, apiKey) {
+    try {
+      // Desativar configurações antigas do usuário
+      await this.connection.execute(
+        "UPDATE n8n_configs SET is_active = FALSE WHERE user_id = ?",
+        [userId]
+      );
+
+      // Inserir nova configuração
+      const [result] = await this.connection.execute(
+        `INSERT INTO n8n_configs (user_id, instance_url, api_key, last_tested) 
+         VALUES (?, ?, ?, NOW())`,
+        [userId, instanceUrl, apiKey]
+      );
+
+      return { success: true, configId: result.insertId };
+    } catch (error) {
+      console.error("❌ Erro ao salvar configuração N8N:", error);
+      throw error;
+    }
+  }
+
+  async getN8nConfig(userId) {
+    try {
+      const [rows] = await this.connection.execute(
+        `SELECT * FROM n8n_configs 
+         WHERE user_id = ? AND is_active = TRUE 
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
+
+      return rows.length > 0 ? rows[0] : null;
+    } catch (error) {
+      console.error("❌ Erro ao buscar configuração N8N:", error);
+      throw error;
+    }
+  }
+
+  async deleteN8nConfig(userId) {
+    try {
+      await this.connection.execute(
+        "UPDATE n8n_configs SET is_active = FALSE WHERE user_id = ?",
+        [userId]
+      );
+      return { success: true };
+    } catch (error) {
+      console.error("❌ Erro ao deletar configuração N8N:", error);
+      throw error;
+    }
+  }
+
+  async updateN8nConfigLastTested(userId) {
+    try {
+      await this.connection.execute(
+        "UPDATE n8n_configs SET last_tested = NOW() WHERE user_id = ? AND is_active = TRUE",
+        [userId]
+      );
+      return { success: true };
+    } catch (error) {
+      console.error("❌ Erro ao atualizar último teste N8N:", error);
+      throw error;
+    }
   }
 }
 // --- Exporta a classe ---

@@ -195,7 +195,7 @@ services:
       - N8N_HOST=0.0.0.0
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
-      - N8N_USER_MANAGEMENT_DISABLED=true
+      - N8N_USER_MANAGEMENT_DISABLED=false
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_METRICS=false
       - N8N_LOG_LEVEL=info
@@ -203,7 +203,6 @@ services:
       - WEBHOOK_URL=http://localhost:5678
       - GENERIC_TIMEZONE=America/Sao_Paulo
       - N8N_ENCRYPTION_KEY=n8n-local-encryption-key-123
-      - N8N_API_KEY=n8n-local-api-key
     volumes:
       - n8n_data:/home/node/.n8n
     expose:

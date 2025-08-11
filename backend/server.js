@@ -17,11 +17,42 @@ const app = express(); // --- Cria o app ---
 const PORT = 3001; // --- Define a porta ---
 
 // --- Configs a partir do .env ---
-const N8N_API_URL = process.env.N8N_API_URL || "http://localhost:5678"; // --- Define a URL da API do n8n ---
+const DEFAULT_N8N_URL = process.env.N8N_API_URL || "http://localhost:5678"; // --- URL padrão do n8n ---
 const LOCAL_API_URL_FOR_N8N = `http://localhost:${PORT}`; // --- Define a URL local da API do n8n ---
 
-// Variável global para armazenar a API key do n8n (será definida pelo frontend)
+  // --- Cria instância global do N8N API ---
+const n8nApi = new N8nAPI(DEFAULT_N8N_URL, null);
+
+// Variáveis globais controladas para estado do N8N (evita ReferenceError)
 let currentN8nApiKey = null;
+let currentN8nUrl = DEFAULT_N8N_URL;
+
+// Função para atualizar API key e URL do N8N
+function updateN8nApiKey(apiKey, instanceUrl = null) {
+  if (instanceUrl) {
+    n8nApi.baseUrl = instanceUrl;
+  }
+  
+  n8nApi.updateApiKey(apiKey);
+  
+  console.log(`🔄 N8N API atualizada: ${n8nApi.baseUrl} ${apiKey ? '(com API key)' : '(sem API key)'}`);
+}
+
+// Função para carregar configuração do N8N do banco de dados
+async function loadN8nConfigFromDB(userId) {
+  try {
+    const config = await db.getN8nConfig(userId);
+    if (config) {
+      updateN8nApiKey(config.api_key, config.instance_url);
+      console.log(`📋 Configuração N8N carregada do banco: ${config.instance_url}`);
+      return config;
+    }
+    return null;
+  } catch (error) {
+    console.error('❌ Erro ao carregar configuração N8N do banco:', error.message);
+    return null;
+  }
+}
 
 // Middleware para autenticação por API Key
 function authenticateApiKey(req, res, next) {
@@ -36,7 +67,7 @@ function authenticateApiKey(req, res, next) {
   }
 
   // Verifica se a API key fornecida é a mesma que está sendo usada pelo backend
-  if (apiKey !== currentN8nApiKey) {
+  if (apiKey !== n8nApi.apiKey) {
     return res.status(403).json({
       success: false,
       error: "API Key inválida ou não sincronizada",
@@ -46,16 +77,104 @@ function authenticateApiKey(req, res, next) {
   next();
 }
 
-// Função para atualizar a API key do n8n
-function updateN8nApiKey(newApiKey) {
-  currentN8nApiKey = newApiKey;
-  if (n8nApi) {
-    n8nApi.updateApiKey(newApiKey);
+// Middleware híbrido que aceita tanto API Key quanto JWT Token
+function authenticateApiKeyOrToken(req, res, next) {
+  // Tentar primeiro com API Key
+  const apiKey = req.headers["x-api-key"] || req.headers["api-key"] || req.query.api_key;
+  
+  if (apiKey && apiKey === n8nApi.apiKey) {
+    return next();
+  }
+  
+  // Se não tem API Key válida, tentar com JWT Token
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      error: "API Key ou Token de acesso requerido" 
+    });
+  }
+  
+  const jwt = require("jsonwebtoken");
+  jwt.verify(token, process.env.JWT_SECRET || "default-secret", (err, user) => {
+    if (err) {
+      return res.status(403).json({ 
+        success: false, 
+        error: "Token inválido" 
+      });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// Função para testar API key em uma instância N8N específica
+async function testN8nInstance(instanceUrl, apiKey) {
+  console.log(`🔍 Testando API key na instância: ${instanceUrl}`);
+  
+  try {
+    // Normalizar URL (remover barra final se houver)
+    const normalizedUrl = instanceUrl.endsWith('/') ? instanceUrl.slice(0, -1) : instanceUrl;
+    
+    // Testar endpoint de workflows
+    const response = await fetch(`${normalizedUrl}/api/v1/workflows`, {
+      method: "GET",
+      headers: {
+        "X-N8N-API-KEY": apiKey,
+        "Content-Type": "application/json",
+      },
+      timeout: 10000,
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`✅ API key válida na instância: ${normalizedUrl}`);
+      console.log(`📊 Encontrados ${data.data ? data.data.length : 0} workflows`);
+      return { 
+        url: normalizedUrl, 
+        workflows: data.data || [],
+        success: true 
+      };
+    } else {
+      const errorText = await response.text();
+      console.log(`❌ API key inválida na instância: ${normalizedUrl} (${response.status})`);
+      return { 
+        success: false, 
+        error: `API key inválida: ${response.status} ${response.statusText}`,
+        details: errorText
+      };
+    }
+  } catch (error) {
+    console.log(`❌ Erro ao conectar com ${instanceUrl}: ${error.message}`);
+    return { 
+      success: false, 
+      error: `Erro de conexão: ${error.message}` 
+    };
   }
 }
 
+// Função para atualizar a API key e URL do n8n
+function updateN8nApiKey(newApiKey, newUrl = null) {
+  // Persistir estado global seguro
+  currentN8nApiKey = newApiKey || null;
+  if (newUrl && newUrl !== currentN8nUrl) {
+    currentN8nUrl = newUrl;
+    console.log(`🌐 URL do N8N atualizada para: ${currentN8nUrl}`);
+  }
+
+  // Atualizar instância existente sem reatribuir o const
+  if (n8nApi) {
+    n8nApi.baseUrl = currentN8nUrl;
+    n8nApi.updateApiKey(currentN8nApiKey);
+  }
+
+  const keyPreview = currentN8nApiKey ? `${currentN8nApiKey.substring(0, 20)}...` : 'removida';
+  console.log(`🔑 API Key do n8n atualizada: ${keyPreview}`);
+}
+
 let db = null; // --- Define o banco de dados ---
-let n8nApi = null; // --- Define a API do n8n ---
 
 async function main() {
   // --- Inicia a aplicação ---
@@ -75,9 +194,8 @@ async function main() {
   }
 
   // 2. Inicializa outros serviços (se o DB estiver OK)
-  console.log(`🔗 Conectando ao n8n em: ${N8N_API_URL}`);
-  console.log(`⚠️ API Key do n8n deve ser configurada via frontend`);
-  n8nApi = new N8nAPI(N8N_API_URL, null); // --- Cria a API do n8n sem API key inicial ---
+  console.log(`🔗 N8N configurado inicialmente em: ${n8nApi.baseUrl}`);
+  console.log(`⚠️ Configuração específica será carregada do banco de dados conforme usuário`);
   console.log("✅ Serviços de API inicializados."); // --- Exibe uma mensagem de sucesso ---
 
   // 3. Configura Middlewares
@@ -116,7 +234,7 @@ function setupRoutes(app) {
   // --- Rotas da API ---
 
   // Sincronização do n8n com o banco de dados
-  app.post("/api/sync-n8n-to-db", authenticateApiKey, async (req, res) => {
+  app.post("/api/sync-n8n-to-db", authenticateApiKeyOrToken, async (req, res) => {
     // --- Sincroniza os workflows ---
     try {
       // --- Tenta sincronizar os workflows ---
@@ -136,7 +254,7 @@ function setupRoutes(app) {
   });
 
   // Rota para obter todos os workflows do banco de dados
-  app.get("/api/db/workflows", authenticateApiKey, async (req, res) => {
+  app.get("/api/db/workflows", authenticateApiKeyOrToken, async (req, res) => {
     // --- Obtém todos os workflows ---
     try {
       // --- Tenta obter os workflows ---
@@ -148,7 +266,7 @@ function setupRoutes(app) {
   });
 
   // Rota para obter um workflow específico do banco de dados
-  app.get("/api/db/workflows/:id", authenticateApiKey, async (req, res) => {
+  app.get("/api/db/workflows/:id", authenticateApiKeyOrToken, async (req, res) => {
     // --- Obtém um workflow específico ---
     try {
       // --- Tenta obter o workflow ---
@@ -173,7 +291,7 @@ function setupRoutes(app) {
   });
 
   // Rota para atualizar um workflow específico do banco de dados
-  app.put("/api/db/workflows/:id", authenticateApiKey, async (req, res) => {
+  app.put("/api/db/workflows/:id", authenticateApiKeyOrToken, async (req, res) => {
     // --- Atualiza um workflow específico ---
     const { id } = req.params; // --- Obtém o ID do workflow ---
     const { name, active } = req.body; // --- Obtém o nome e o status do workflow ---
@@ -198,7 +316,7 @@ function setupRoutes(app) {
   // Rota para salvar as credenciais de um workflow
   app.post(
     "/api/db/credentials/:workflowId",
-    authenticateApiKey,
+    authenticateApiKeyOrToken,
     async (req, res) => {
       try {
         const { workflowId } = req.params;
@@ -218,7 +336,7 @@ function setupRoutes(app) {
   );
 
   // Rota para deletar um workflow específico do banco de dados
-  app.delete("/api/db/workflows/:id", authenticateApiKey, async (req, res) => {
+  app.delete("/api/db/workflows/:id", authenticateApiKeyOrToken, async (req, res) => {
     // --- Deleta um workflow específico ---
     try {
       // --- Tenta deletar o workflow ---
@@ -290,10 +408,10 @@ function setupRoutes(app) {
 
   app.post(
     "/api/create-workflow-with-credentials",
-    authenticateApiKey,
+    authenticateApiKeyOrToken,
     async (req, res) => {
       // --- Cria um workflow com credenciais ---
-      const { workflowName, credentials } = req.body; // --- Obtém o nome do workflow e as credenciais ---
+      const { workflowName, credentials, templateType } = req.body; // --- Inclui templateType para escolher o modelo de agente ---
 
       if (!workflowName || !credentials) {
         // --- Se o nome do workflow ou as credenciais não existem, exibe uma mensagem de erro ---
@@ -311,14 +429,23 @@ function setupRoutes(app) {
           JSON.stringify({ workflowName, credentials }, null, 2)
         );
 
+        // Detectar tipos de credenciais baseado nos nodes instalados
+        console.log("🔍 Detectando tipos de credenciais disponíveis...");
+        const credentialTypes = await detectCredentialTypes();
+        console.log("📋 Tipos de credenciais a usar:", credentialTypes);
+
         console.log("1. Criando credencial do Chatwoot..."); // --- Exibe uma mensagem de sucesso ---
         const chatwootCredData = {
           name: `Chatwoot Credential for ${workflowName}`, // --- Define o nome da credencial ---
-          type: "chatwootApi", // --- Define o tipo da credencial ---
-          data: {
-            // --- Define os dados da credencial ---
-            url: credentials.chatwoot.apiUrl, // --- Define a URL da API do Chatwoot ---
+          type: credentialTypes.chatwoot, // --- Tipo detectado dinamicamente ---
+          data: credentialTypes.chatwoot === "chatwootApi" ? {
+            // Dados específicos para node do Chatwoot
+            baseUrl: credentials.chatwoot.apiUrl,
             accessToken: credentials.chatwoot.accessToken,
+          } : {
+            // Dados genéricos para httpHeaderAuth
+            name: "api_access_token",
+            value: credentials.chatwoot.accessToken,
           },
         };
         console.log(
@@ -326,24 +453,46 @@ function setupRoutes(app) {
           JSON.stringify(chatwootCredData, null, 2)
         );
 
-        const chatwootCred = await n8nApi.createCredential(chatwootCredData); // --- Cria a credencial do Chatwoot ---
+        let chatwootCred;
+        try {
+          chatwootCred = await n8nApi.createCredential(chatwootCredData); // --- Cria a credencial do Chatwoot ---
         console.log(`   ✅ Chatwoot Cred ID: ${chatwootCred.id}`); // --- Exibe uma mensagem de sucesso ---
+        } catch (chatwootError) {
+          console.error("❌ Erro ao criar credencial Chatwoot:", chatwootError);
+          throw new Error(`Falha ao criar credencial Chatwoot: ${chatwootError.message}`);
+        }
 
         console.log("2. Criando credencial do Google Gemini..."); // --- Exibe uma mensagem de sucesso ---
-        const geminiCred = await n8nApi.createCredential({
-          // --- Cria a credencial do Google Gemini ---
+        const geminiCredData = {
           name: `Gemini Credential for ${workflowName}`, // --- Define o nome da credencial ---
-          type: "googlePalmApi", // --- Define o tipo da credencial ---
-          data: {
-            // --- Define os dados da credencial ---
-            apiKey: credentials.gemini.apiKey, // --- Define a chave da API do Google Gemini ---
-            host: "https://generativelanguage.googleapis.com", // --- Define o host da API ---
+          type: credentialTypes.gemini, // --- Tipo detectado dinamicamente ---
+          data: credentialTypes.gemini === "googleGenerativeAiApi" ? {
+            // Dados específicos para node do Google Gemini
+            apiKey: credentials.gemini.apiKey,
+          } : {
+            // Dados genéricos para httpHeaderAuth
+            name: "x-goog-api-key", // --- Header name para Google API ---
+            value: credentials.gemini.apiKey, // --- Define a chave da API do Google Gemini ---
           },
-        });
-        console.log(`   -> Gemini Cred ID: ${geminiCred.id}`); // --- Exibe uma mensagem de sucesso ---
+        };
+        console.log(
+          "   📝 Dados da credencial Gemini:",
+          JSON.stringify(geminiCredData, null, 2)
+        );
+        
+        let geminiCred;
+        try {
+          geminiCred = await n8nApi.createCredential(geminiCredData);
+          console.log(`   ✅ Gemini Cred ID: ${geminiCred.id}`); // --- Exibe uma mensagem de sucesso ---
+        } catch (geminiError) {
+          console.error("❌ Erro ao criar credencial Gemini:", geminiError);
+          throw new Error(`Falha ao criar credencial Gemini: ${geminiError.message}`);
+        }
 
         console.log("3. Criando credencial do Google Sheets..."); // --- Exibe uma mensagem de sucesso ---
-        const googleSheetsCred = await n8nApi.createCredential({
+        let googleSheetsCred;
+        try {
+          googleSheetsCred = await n8nApi.createCredential({
           // --- Cria a credencial do Google Sheets ---
           name: `Google Sheets Credential for ${workflowName}`, // --- Define o nome da credencial ---
           type: "googleSheetsOAuth2Api", // --- Define o tipo da credencial ---
@@ -353,9 +502,13 @@ function setupRoutes(app) {
             clientSecret: credentials.googleSheets.clientSecret, // --- Define o segredo do cliente do Google Sheets ---
           },
         });
-        console.log(`   -> Google Sheets Cred ID: ${googleSheetsCred.id}`); // --- Exibe uma mensagem de sucesso ---
+          console.log(`   ✅ Google Sheets Cred ID: ${googleSheetsCred.id}`); // --- Exibe uma mensagem de sucesso ---
+        } catch (sheetsError) {
+          console.error("❌ Erro ao criar credencial Google Sheets:", sheetsError);
+          throw new Error(`Falha ao criar credencial Google Sheets: ${sheetsError.message}`);
+        }
 
-        console.log("4. Montando o workflow com os IDs das credenciais..."); // --- Exibe uma mensagem de sucesso ---
+        console.log("4. Montando o workflow com os IDs das credenciais...");
         const workflowTemplate = getWorkflowTemplate(
           // --- Monta o workflow com os IDs das credenciais ---
           workflowName, // --- Define o nome do workflow ---
@@ -364,8 +517,32 @@ function setupRoutes(app) {
           googleSheetsCred.id // --- Define o ID da credencial do Google Sheets ---
         );
 
-        console.log("5. Criando o workflow no n8n..."); // --- Exibe uma mensagem de sucesso ---
-        const createdWorkflow = await n8nApi.createWorkflow(workflowTemplate); // --- Cria o workflow no n8n ---
+        // 5. Garantir nodes necessários instalados (Chatwoot / Evolution API)
+        try {
+          console.log("5. Verificando/instalando nodes necessários...");
+          await n8nApi.ensureRequiredNodes();
+        } catch (nodeErr) {
+          console.warn("⚠️ Não foi possível garantir nodes necessários:", nodeErr.message);
+        }
+
+        console.log("6. Criando o workflow no n8n...");
+        let createdWorkflow;
+        try {
+          const { getWorkflowTemplateByType } = require('./workflow-templates');
+          const agentType = (templateType || 'standard');
+          const templated = getWorkflowTemplateByType(agentType, workflowName, chatwootCred.id, geminiCred.id, googleSheetsCred.id);
+          createdWorkflow = await n8nApi.createWorkflow(templated);
+          console.log(`   ✅ Workflow criado com ID: ${createdWorkflow.id}`);
+        } catch (workflowError) {
+          console.error("❌ Erro ao criar workflow:", workflowError);
+          try {
+            const { getWorkflowTemplateByType } = require('./workflow-templates');
+            const agentType = (templateType || 'standard');
+            const templated = getWorkflowTemplateByType(agentType, workflowName, chatwootCred.id, geminiCred.id, googleSheetsCred.id);
+            console.error("📄 Template do workflow (agente:", agentType, "):", JSON.stringify(templated, null, 2));
+          } catch {}
+          throw new Error(`Falha ao criar workflow: ${workflowError.message}`);
+        }
 
         console.log("6. Sincronizando o novo workflow com o DB local...");
         await db.syncAllWorkflows([createdWorkflow]);
@@ -399,7 +576,7 @@ function setupRoutes(app) {
   // Rota para atualizar credenciais específicas no n8n
   app.post(
     "/api/update-n8n-credential",
-    authenticateApiKey,
+    authenticateApiKeyOrToken,
     async (req, res) => {
       const { workflowId, credentialType, credentialData } = req.body;
 
@@ -426,6 +603,7 @@ function setupRoutes(app) {
           chatwoot: "chatwootApi",
           gemini: "googlePalmApi",
           googleSheets: "googleSheetsOAuth2Api",
+          evolution: "evolutionApi",
         };
 
         const credentialTypeName = credentialTypes[credentialType];
@@ -456,9 +634,73 @@ function setupRoutes(app) {
           data: credentialData,
         });
 
-        console.log(
-          `Credencial ${credentialType} atualizada com sucesso (ID: ${targetCredential.id})`
-        );
+        console.log(`Credencial ${credentialType} atualizada com sucesso (ID: ${targetCredential.id})`);
+
+        // Vincular automaticamente aos nodes do workflow quando aplicável
+        try {
+          const wf = await n8nApi.getWorkflow(workflowId);
+          if (wf && Array.isArray(wf.nodes)) {
+            let updated = false;
+            for (const node of wf.nodes) {
+              const nodeType = (node.type || '').toLowerCase();
+              node.credentials = node.credentials || {};
+
+              // Evolution API
+              if (
+                credentialTypeName === 'evolutionApi' &&
+                (nodeType.includes('evolution') || node.type === 'n8n-nodes-evolution-api.evolutionApi')
+              ) {
+                node.credentials['evolutionApi'] = {
+                  id: targetCredential.id,
+                  name: targetCredential.name,
+                };
+                updated = true;
+              }
+
+              // Chatwoot
+              if (
+                credentialTypeName === 'chatwootApi' &&
+                (nodeType.includes('chatwoot') || node.type === '@devlikeapro/n8n-nodes-chatwoot.chatWoot')
+              ) {
+                node.credentials['chatwootApi'] = {
+                  id: targetCredential.id,
+                  name: targetCredential.name,
+                };
+                updated = true;
+              }
+
+              // Google Sheets
+              if (
+                credentialTypeName === 'googleSheetsOAuth2Api' &&
+                (nodeType.includes('googlesheetstool') || nodeType.includes('googlesheets'))
+              ) {
+                node.credentials['googleSheetsOAuth2Api'] = {
+                  id: targetCredential.id,
+                  name: targetCredential.name,
+                };
+                updated = true;
+              }
+
+              // Google Gemini (Palm API cred)
+              if (
+                credentialTypeName === 'googlePalmApi' &&
+                (nodeType.includes('lmchatgooglegemini') || nodeType.includes('lmchatgoogle') || nodeType.includes('gemini'))
+              ) {
+                node.credentials['googlePalmApi'] = {
+                  id: targetCredential.id,
+                  name: targetCredential.name,
+                };
+                updated = true;
+              }
+            }
+            if (updated) {
+              await n8nApi.updateWorkflow(workflowId, wf);
+              console.log(`Workflow ${workflowId} atualizado com credencial ${credentialTypeName} vinculada aos nodes.`);
+            }
+          }
+        } catch (linkErr) {
+          console.warn('⚠️ Não foi possível vincular credencial aos nodes automaticamente:', linkErr.message);
+        }
 
         res.status(200).json({
           success: true,
@@ -766,7 +1008,10 @@ function setupRoutes(app) {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
 
+    console.log(`🔍 Middleware auth - Header: ${authHeader ? "Existe" : "Não existe"}, Token: ${token ? "Existe" : "Não existe"}`);
+
     if (!token) {
+      console.log("❌ Token não fornecido");
       return res
         .status(401)
         .json({ success: false, error: "Token de acesso requerido" });
@@ -787,10 +1032,10 @@ function setupRoutes(app) {
     );
   }
 
-  // Rota para sincronizar API key do n8n
-  app.post("/api/n8n/sync-api-key", async (req, res) => {
+  // Rota para testar API key do n8n em uma instância específica
+  app.post("/api/n8n/test-api-key", async (req, res) => {
     try {
-      const { apiKey } = req.body;
+      const { apiKey, instanceUrl } = req.body;
 
       if (!apiKey) {
         return res.status(400).json({
@@ -799,22 +1044,549 @@ function setupRoutes(app) {
         });
       }
 
-      // Atualiza a API key no backend
-      updateN8nApiKey(apiKey);
+      if (!instanceUrl) {
+        return res.status(400).json({
+          success: false,
+          error: "Endereço da instância é obrigatório",
+        });
+      }
+
+      // Testar API key na instância fornecida
+      console.log(`🔍 Testando API key: ${apiKey.substring(0, 20)}... na instância: ${instanceUrl}`);
+      const testResult = await testN8nInstance(instanceUrl, apiKey);
+
+      if (testResult.success) {
+        res.status(200).json({
+          success: true,
+          message: `API Key válida na instância: ${testResult.url}`,
+          instance: {
+            url: testResult.url,
+            workflowCount: testResult.workflows.length
+          }
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: testResult.error,
+          details: testResult.details
+        });
+      }
+    } catch (error) {
+      console.error("❌ Erro ao testar API key:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao testar API key",
+      });
+    }
+  });
+
+  // Rota para sincronizar API key do n8n (com URL específica e limpeza) - requer autenticação
+  app.post("/api/n8n/sync-api-key", authenticateToken, async (req, res) => {
+    try {
+      const { apiKey, instanceUrl } = req.body;
+      const userId = req.user.userId;
+
+      if (!apiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "API Key é obrigatória",
+        });
+      }
+
+      if (!instanceUrl) {
+        return res.status(400).json({
+          success: false,
+          error: "Endereço da instância é obrigatório",
+        });
+      }
+
+      // 1. Testar a instância fornecida
+      console.log(`🔍 Testando instância para sincronização: ${instanceUrl}`);
+      const testResult = await testN8nInstance(instanceUrl, apiKey);
+
+      if (!testResult.success) {
+        return res.status(400).json({
+          success: false,
+          error: testResult.error,
+          details: testResult.details
+        });
+      }
+
+      const newInstanceUrl = testResult.url;
+      const workflows = testResult.workflows;
+
+      // 2. Verificar se mudou de instância
+      if (newInstanceUrl !== currentN8nUrl) {
+        console.log(`🔄 Mudança de instância detectada: ${currentN8nUrl} → ${newInstanceUrl}`);
+        
+        // 3. Limpar workflows antigos da instância anterior
+        try {
+          console.log(`🧹 Limpando workflows da instância anterior...`);
+          await db.connection.execute("DELETE FROM agents");
+          await db.connection.execute("DELETE FROM credentials");
+          await db.connection.execute("DELETE FROM workflows");
+          console.log(`✅ Workflows antigos removidos`);
+        } catch (cleanError) {
+          console.warn(`⚠️ Erro ao limpar workflows antigos:`, cleanError);
+        }
+      }
+
+      // 4. Salvar configuração no banco de dados
+      try {
+        await db.saveN8nConfig(userId, newInstanceUrl, apiKey);
+        console.log(`💾 Configuração N8N salva para usuário ${userId}`);
+      } catch (saveError) {
+        console.warn(`⚠️ Erro ao salvar configuração no banco:`, saveError);
+      }
+
+      // 5. Verificar e instalar nodes necessários
+      console.log("📦 Verificando nodes necessários...");
+      try {
+        const nodeResults = await n8nApi.ensureRequiredNodes();
+        console.log("📊 Resultado da verificação de nodes:", JSON.stringify(nodeResults, null, 2));
+      } catch (nodeError) {
+        console.warn("⚠️ Erro ao verificar/instalar nodes:", nodeError.message);
+      }
+
+      // 6. Atualizar configuração com nova instância
+      updateN8nApiKey(apiKey, newInstanceUrl);
+
+      // 7. Sincronizar workflows da instância correta
+      if (workflows.length > 0) {
+        console.log(`📥 Sincronizando ${workflows.length} workflows da nova instância...`);
+        try {
+          await db.syncAllWorkflows(workflows);
+          console.log(`✅ Workflows sincronizados com sucesso`);
+        } catch (syncError) {
+          console.warn(`⚠️ Erro ao sincronizar workflows:`, syncError);
+        }
+      }
 
       console.log(
-        `✅ API Key do n8n sincronizada: ${apiKey.substring(0, 20)}...`
+        `✅ API Key sincronizada com instância: ${newInstanceUrl}`
       );
 
       res.status(200).json({
         success: true,
-        message: "API Key do n8n sincronizada com sucesso",
+        message: `API Key sincronizada com instância: ${newInstanceUrl}`,
+        instance: {
+          url: newInstanceUrl,
+          workflowCount: workflows.length
+        }
       });
     } catch (error) {
       console.error("❌ Erro ao sincronizar API key:", error);
       res.status(500).json({
         success: false,
         error: "Erro interno ao sincronizar API key",
+      });
+    }
+  });
+
+  // Rota para obter configuração N8N do usuário
+  app.get("/api/n8n/config", authenticateToken, async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const config = await db.getN8nConfig(userId);
+      
+      if (config) {
+        // Carregar configuração no backend
+        updateN8nApiKey(config.api_key, config.instance_url);
+        
+        console.log(`📋 Configuração N8N enviada para frontend: ${config.instance_url}`);
+        
+        res.json({
+          success: true,
+          config: {
+            instanceUrl: config.instance_url,
+            hasApiKey: true, // Não enviar a API key por segurança
+            lastTested: config.last_tested
+          }
+        });
+      } else {
+        console.log(`ℹ️ Nenhuma configuração N8N encontrada para usuário ${userId}`);
+        res.json({
+          success: false,
+          message: "Nenhuma configuração N8N encontrada",
+          config: {
+            instanceUrl: DEFAULT_N8N_URL, // Retornar URL padrão
+            hasApiKey: false,
+            lastTested: null
+          }
+        });
+      }
+    } catch (error) {
+      console.error("❌ Erro ao buscar configuração N8N:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao buscar configuração",
+      });
+    }
+  });
+
+  // Rota para deletar configuração N8N do usuário
+  app.delete("/api/n8n/config", authenticateToken, async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      await db.deleteN8nConfig(userId);
+      
+      // Limpar configuração do backend
+      updateN8nApiKey(null, DEFAULT_N8N_URL);
+      
+      res.json({
+        success: true,
+        message: "Configuração N8N removida"
+      });
+    } catch (error) {
+      console.error("❌ Erro ao deletar configuração N8N:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao deletar configuração",
+      });
+    }
+  });
+
+  // Rota para instalar nodes necessários
+  app.post("/api/n8n/install-nodes", authenticateToken, async (req, res) => {
+    try {
+      console.log("🔧 Iniciando instalação forçada de nodes...");
+      
+      if (!currentN8nApiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "API Key do N8N não configurada"
+        });
+      }
+      
+      // Garantir que n8nApi está sincronizado
+      updateN8nApiKey(currentN8nApiKey, currentN8nUrl);
+
+      const nodeResults = await n8nApi.ensureRequiredNodes();
+      
+      const successfulInstalls = nodeResults.filter(r => r.installed);
+      const failedInstalls = nodeResults.filter(r => !r.installed);
+      
+      console.log(`✅ Instalação concluída: ${successfulInstalls.length} sucessos, ${failedInstalls.length} falhas`);
+      
+      res.json({
+        success: true,
+        message: "Processo de instalação concluído",
+        results: {
+          successful: successfulInstalls,
+          failed: failedInstalls,
+          summary: {
+            total: nodeResults.length,
+            installed: successfulInstalls.length,
+            failed: failedInstalls.length
+          }
+        }
+      });
+    } catch (error) {
+      console.error("❌ Erro ao instalar nodes:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao instalar nodes",
+        details: error.message
+      });
+    }
+  });
+
+  // Rota para verificar status dos nodes
+  app.get("/api/n8n/nodes-status", authenticateToken, async (req, res) => {
+    try {
+      if (!currentN8nApiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "API Key do N8N não configurada"
+        });
+      }
+      
+      // Garantir que n8nApi está sincronizado
+      updateN8nApiKey(currentN8nApiKey, currentN8nUrl);
+
+      const requiredNodes = [
+        { package: '@devlikeapro/n8n-nodes-chatwoot', node: 'ChatWoot' },
+        { package: 'n8n-nodes-evolution-api', node: 'EvolutionAPI' }
+      ];
+
+      const nodeStatus = [];
+      
+      for (const { package: pkg, node } of requiredNodes) {
+        const isInstalled = await n8nApi.checkNodeInstalled(node);
+        nodeStatus.push({
+          package: pkg,
+          node,
+          installed: isInstalled
+        });
+      }
+      
+      res.json({
+        success: true,
+        nodes: nodeStatus
+      });
+    } catch (error) {
+      console.error("❌ Erro ao verificar status dos nodes:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao verificar nodes",
+        details: error.message
+      });
+    }
+  });
+
+  // Rota para analisar configuração de workflow específico
+  app.get("/api/workflow/:workflowId/analyze", authenticateToken, async (req, res) => {
+    try {
+      const { workflowId } = req.params;
+      
+      console.log(`🔍 Iniciando análise do workflow: ${workflowId}`);
+      
+      if (!n8nApi.apiKey) {
+        console.log("❌ API Key do N8N não configurada");
+        return res.status(400).json({
+          success: false,
+          error: "API Key do N8N não configurada"
+        });
+      }
+
+      console.log(`📊 N8N API configurada, baseUrl: ${n8nApi.baseUrl}`);
+      console.log(`🔍 Analisando configuração do workflow: ${workflowId}`);
+      
+      const analysis = await n8nApi.analyzeWorkflowConfiguration(workflowId);
+      
+      console.log(`✅ Análise concluída para workflow ${workflowId}`);
+      console.log(`📋 Resultado:`, JSON.stringify(analysis, null, 2));
+      
+      res.json({
+        success: true,
+        analysis
+      });
+    } catch (error) {
+      console.error("❌ Erro ao analisar workflow:", error);
+      console.error("❌ Stack trace:", error.stack);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao analisar workflow",
+        details: error.message
+      });
+    }
+  });
+
+  // Rota para salvar prompt estruturado
+  app.post("/api/workflow/:workflowId/prompt", authenticateToken, async (req, res) => {
+    try {
+      const { workflowId } = req.params;
+      const { promptStructure } = req.body;
+      
+      if (!currentN8nApiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "API Key do N8N não configurada"
+        });
+      }
+      
+      // Garantir que n8nApi está sincronizado
+      updateN8nApiKey(currentN8nApiKey, currentN8nUrl);
+
+      console.log(`💾 Salvando prompt estruturado para workflow: ${workflowId}`);
+      const result = await n8nApi.saveStructuredPrompt(workflowId, promptStructure);
+      
+      res.json({
+        success: true,
+        message: "Prompt estruturado salvo com sucesso",
+        result
+      });
+    } catch (error) {
+      console.error("❌ Erro ao salvar prompt estruturado:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao salvar prompt",
+        details: error.message
+      });
+    }
+  });
+
+  // Rota para atualizar credenciais de um node específico
+  app.post("/api/workflow/:workflowId/node/:nodeId/credentials", authenticateToken, async (req, res) => {
+    try {
+      const { workflowId, nodeId } = req.params;
+      const { credentialType, credentialData } = req.body;
+      
+      if (!currentN8nApiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "API Key do N8N não configurada"
+        });
+      }
+      
+      // Garantir que n8nApi está sincronizado
+      updateN8nApiKey(currentN8nApiKey, currentN8nUrl);
+
+      console.log(`🔑 Atualizando credencial ${credentialType} para node ${nodeId} no workflow ${workflowId}`);
+      
+      // 1) Obter workflow atual para ter nome e localizar o node
+      const workflow = await n8nApi.getWorkflow(workflowId);
+      if (!workflow) {
+        throw new Error("Workflow não encontrado no n8n");
+      }
+
+      const workflowName = workflow.name || `wf-${workflowId}`;
+
+      // Normalizar tipos conhecidos para títulos de credenciais
+      const normalizedTypeName = {
+        googlePalmApi: 'googlePalmApi',
+        gemini: 'googlePalmApi',
+        chatwoot: 'chatwootApi',
+        googleSheets: 'googleSheetsOAuth2Api',
+      }[credentialType] || credentialType;
+
+      // 2) Localizar o node alvo e determinar a key esperada pelo node
+      const nodesEarly = workflow.nodes || [];
+      const nodeEarly = nodesEarly.find((n) => n.id === nodeId);
+      if (!nodeEarly) {
+        throw new Error(`Node ${nodeId} não encontrado no workflow`);
+      }
+      let targetKey = Object.keys(nodeEarly.credentials || {})[0] || null;
+      if (!targetKey) {
+        const t = (nodeEarly.type || '').toLowerCase();
+        if (t.includes('googlesheetstool')) targetKey = 'googleSheetsOAuth2Api';
+        else if (t.includes('chatwoot')) targetKey = 'chatwootApi';
+        else if (t.includes('lmchatgooglegemini')) targetKey = 'googlePalmApi';
+        else if (t.includes('evolution')) targetKey = 'evolutionApi';
+        else targetKey = normalizedTypeName;
+      }
+
+      // 3) Verificar se já existe uma credencial do tipo para este workflow
+      let existingCred = null;
+      try {
+        const allCreds = await n8nApi.getCredentials();
+        const credsArray = Array.isArray(allCreds) ? allCreds : (allCreds.data || allCreds.credentials || []);
+        existingCred = credsArray.find(
+          (c) => c.type === targetKey && (c.name?.includes(workflowName) || c.name?.includes(nodeId))
+        ) || null;
+      } catch (listError) {
+        console.warn("⚠️ Não foi possível listar credenciais, prosseguindo para criação direta:", listError.message);
+      }
+
+      // 4) Preparar dados conforme tipo esperado pelo node
+      const normalizeCredentialData = (key, data) => {
+        if (!data || typeof data !== 'object') return {};
+        switch (key) {
+          case 'googlePalmApi':
+          case 'googleGenerativeAiApi':
+            return {
+              apiKey: data.apiKey || data.key || data.token,
+              host: data.host || 'https://generativelanguage.googleapis.com',
+            };
+          case 'chatwootApi':
+            return {
+              url: data.url || data.baseUrl || data.apiUrl,
+              accessToken: data.accessToken || data.token,
+            };
+          case 'googleSheetsOAuth2Api':
+            return {
+              clientId: data.clientId,
+              clientSecret: data.clientSecret,
+            };
+          case 'evolutionApi':
+            return {
+              baseUrl: data.baseUrl || data.url,
+              apiKey: data.apiKey || data.token,
+            };
+          default:
+            return data;
+        }
+      };
+
+      const mappedData = normalizeCredentialData(targetKey, credentialData);
+
+      // Validação simples
+      const assertFields = (obj, fields) => fields.every(f => obj && obj[f]);
+      const requiredByType = {
+        googlePalmApi: ['apiKey', 'host'],
+        googleGenerativeAiApi: ['apiKey', 'host'],
+        chatwootApi: ['url', 'accessToken'],
+        googleSheetsOAuth2Api: ['clientId', 'clientSecret'],
+        evolutionApi: ['baseUrl', 'apiKey'],
+      };
+      const reqFields = requiredByType[targetKey];
+      if (reqFields && !assertFields(mappedData, reqFields)) {
+        return res.status(400).json({
+          success: false,
+          error: `Campos obrigatórios faltando para ${targetKey}: ${reqFields.join(', ')}`,
+        });
+      }
+
+      // 5) Criar ou atualizar a credencial
+      let targetCredential = existingCred;
+      if (targetCredential) {
+        await n8nApi.updateCredential(targetCredential.id, {
+          name: targetCredential.name,
+          type: targetKey,
+          data: mappedData,
+        });
+      } else {
+        targetCredential = await n8nApi.createCredential({
+          name: `${workflowName} - ${targetKey}`,
+          type: targetKey,
+          data: mappedData,
+        });
+      }
+
+      // Normalizar id retornado (em diferentes versões pode vir em campos diferentes)
+      let credentialId = targetCredential?.id
+        || targetCredential?.data?.id
+        || targetCredential?.credential?.id;
+
+      // Se ainda não temos ID, tentar buscar de volta por nome e tipo
+      if (!credentialId) {
+        try {
+          const list = await n8nApi.getCredentials();
+          const arr = Array.isArray(list) ? list : (list.data || list.credentials || []);
+          const found = arr.find(
+            (c) => c.type === targetKey && (c.name === `${workflowName} - ${targetKey}`)
+          );
+          if (found) credentialId = found.id;
+        } catch (probeErr) {
+          console.warn("⚠️ Falha ao re-listar credenciais para determinar ID:", probeErr.message);
+        }
+      }
+      if (!credentialId) {
+        throw new Error("Falha ao obter ID da credencial criada/atualizada");
+      }
+
+      // 6) Atualizar o node alvo dentro do workflow (já temos targetKey)
+      const nodes = workflow.nodes || [];
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) {
+        throw new Error(`Node ${nodeId} não encontrado no workflow`);
+      }
+      if (!node.credentials) node.credentials = {};
+
+      node.credentials[targetKey] = {
+        id: credentialId,
+        name: `${workflowName} - ${targetKey}`,
+      };
+
+      // 5) Salvar workflow atualizado (usa método com payload normalizado)
+      try {
+        await n8nApi.updateWorkflow(workflowId, workflow);
+      } catch (saveErr) {
+        console.error('❌ Erro ao salvar workflow com credencial vinculada:', saveErr);
+        throw new Error(`Falha ao salvar workflow: ${saveErr.message}`);
+      }
+
+      res.json({
+        success: true,
+        message: "Credencial atualizada e vinculada ao node com sucesso",
+        credentialId,
+      });
+    } catch (error) {
+      console.error("❌ Erro ao atualizar credencial:", error);
+      res.status(500).json({
+        success: false,
+        error: "Erro interno ao atualizar credencial",
+        details: error.message
       });
     }
   });
@@ -898,7 +1670,7 @@ function setupRoutes(app) {
         };
 
         const webhookResponse = await fetch(
-          "http://localhost:5678/webhook/99fba45a-54a7-4e54-ac99-afb5b7cb886b",
+          "https://autowebhook.criard.me/webhook/17eb06e2-c91b-448c-854d-3c0e8b1b5471",
           {
             method: "POST",
             headers: {
@@ -1209,17 +1981,44 @@ function setupRoutes(app) {
   // Rota para verificar status do n8n (sem autenticação para verificação inicial)
   app.get("/api/n8n-status", async (req, res) => {
     try {
-      // Primeiro verificar se o n8n está respondendo
-      const healthResponse = await fetch("http://localhost:5678/healthz", {
-        method: "GET",
-        timeout: 5000,
-      });
+      // Usar a URL configurada dinamicamente ao invés de hardcoded localhost
+      const n8nUrl = n8nApi.baseUrl || currentN8nUrl || "http://localhost:5678";
+      
+      console.log(`🔍 Verificando status do N8N: ${n8nUrl}`);
 
-      if (!healthResponse.ok) {
+      // Primeiro verificar se o n8n está respondendo (tentar healthz, se falhar tentar endpoint da API)
+      let isN8nOnline = false;
+      try {
+        const healthResponse = await fetch(`${n8nUrl}/healthz`, {
+          method: "GET",
+          timeout: 10000,
+        });
+        isN8nOnline = healthResponse.ok;
+      } catch (healthError) {
+        console.log(`⚠️ Endpoint /healthz não disponível, tentando API direta...`);
+        // Se /healthz falhar, tentar endpoint da API para verificar se N8N está online
+        try {
+          const apiTestResponse = await fetch(`${n8nUrl}/api/v1/workflows`, {
+            method: "GET",
+            timeout: 10000,
+          });
+          // Se retornar 401, significa que N8N está online mas precisa de auth
+          isN8nOnline = apiTestResponse.status === 401 || apiTestResponse.ok;
+        } catch (apiError) {
+          console.log(`❌ N8N não está acessível em ${n8nUrl}`);
+          return res.json({
+            success: false,
+            status: "offline",
+            message: `N8N não está acessível em ${n8nUrl}. Verifique a URL e se a instância está rodando.`,
+          });
+        }
+      }
+
+      if (!isN8nOnline) {
         return res.json({
           success: false,
           status: "offline",
-          message: `n8n não está respondendo: ${healthResponse.status}`,
+          message: `N8N não está respondendo em ${n8nUrl}`,
         });
       }
 
@@ -1234,42 +2033,40 @@ function setupRoutes(app) {
           });
         }
 
-        const apiResponse = await fetch(
-          "http://localhost:5678/api/v1/credentials",
-          {
-            method: "POST",
-            headers: {
-              "X-N8N-API-KEY": currentN8nApiKey,
-              "Content-Type": "application/json",
-            },
-            timeout: 5000,
-          }
-        );
+        const apiResponse = await fetch(`${n8nUrl}/api/v1/workflows`, {
+          method: "GET",
+          headers: {
+            "X-N8N-API-KEY": currentN8nApiKey,
+            "Content-Type": "application/json",
+          },
+          timeout: 10000,
+        });
 
         // Se retornar 401, significa que a API key está incorreta
         if (apiResponse.status === 401) {
           return res.json({
             success: false,
             status: "auth_error",
-            message: "n8n está rodando mas a API key está incorreta",
+            message: "API key está incorreta ou expirada",
           });
         }
 
-        // Se retornar 405, significa que o método não é permitido (normal para POST sem body)
-        if (apiResponse.status === 405) {
+        // Se retornar 403, significa sem permissões
+        if (apiResponse.status === 403) {
           return res.json({
-            success: true,
-            status: "online",
-            message: "n8n está rodando e a API key está correta",
+            success: false,
+            status: "auth_error",
+            message: "API key não tem permissões suficientes",
           });
         }
 
-        // Se retornar 400, significa que a API key está correta mas o body está faltando (esperado)
-        if (apiResponse.status === 400) {
+        // Se chegou até aqui e a resposta foi bem sucedida
+        if (apiResponse.ok) {
           return res.json({
             success: true,
             status: "online",
-            message: "n8n está rodando e a API key está correta",
+            message: `N8N conectado com sucesso: ${n8nUrl}`,
+            instanceUrl: n8nUrl,
           });
         }
 
@@ -1932,6 +2729,58 @@ function setupRoutes(app) {
   );
 
   console.log("✅ Rotas configuradas."); // --- Exibe uma mensagem de sucesso ---
+}
+
+// Função para detectar tipos de credenciais baseado nos nodes instalados
+async function detectCredentialTypes() {
+  try {
+    const nodeResults = await n8nApi.ensureRequiredNodes();
+    
+    const credentialTypes = {
+      chatwoot: "httpHeaderAuth", // Fallback padrão
+      gemini: "httpHeaderAuth",   // Fallback padrão
+      googleSheets: "googleSheetsOAuth2Api" // Padrão do N8N
+    };
+
+    // Verificar se nodes específicos estão instalados
+    const chatwootNode = nodeResults.find(r => r.node === 'ChatWoot');
+    const evolutionNode = nodeResults.find(r => r.node === 'EvolutionAPI');
+
+    if (chatwootNode && chatwootNode.installed) {
+      credentialTypes.chatwoot = "chatwootApi"; // Tipo específico do node
+      console.log("✅ Usando credencial específica do Chatwoot");
+    } else {
+      console.log("⚠️ Usando credencial genérica para Chatwoot");
+    }
+
+    if (evolutionNode && evolutionNode.installed) {
+      credentialTypes.evolution = "evolutionApi"; // Tipo específico do node
+      console.log("✅ Node Evolution API disponível");
+    }
+
+    // Para Gemini, verificar se há node específico do Google
+    try {
+      const isGeminiInstalled = await n8nApi.checkNodeInstalled('googleGenerativeAi');
+      if (isGeminiInstalled) {
+        credentialTypes.gemini = "googleGenerativeAiApi";
+        console.log("✅ Usando credencial específica do Google Gemini");
+      } else {
+        console.log("⚠️ Usando credencial genérica para Gemini");
+      }
+    } catch (error) {
+      console.warn("⚠️ Erro ao verificar node Gemini:", error.message);
+    }
+
+    return credentialTypes;
+  } catch (error) {
+    console.error("❌ Erro ao detectar tipos de credenciais:", error);
+    // Retorna tipos padrão em caso de erro
+    return {
+      chatwoot: "httpHeaderAuth",
+      gemini: "httpHeaderAuth", 
+      googleSheets: "googleSheetsOAuth2Api"
+    };
+  }
 }
 
 function getWorkflowTemplate(
