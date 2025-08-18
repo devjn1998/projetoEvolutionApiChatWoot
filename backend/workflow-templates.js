@@ -1,6 +1,6 @@
 // Centraliza templates de workflows de agentes
 
-function buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, googleSheetsCredId) {
+function buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, googleSheetsCredId, ownerUserId) {
   return {
     name: workflowName,
     nodes: [
@@ -94,7 +94,7 @@ function buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, 
         type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
         typeVersion: 1,
         position: [-760, 220],
-        credentials: { googlePalmApi: { id: geminiCredId, name: `Gemini Credential for ${workflowName}` } },
+        credentials: { googleGenerativeAiApi: { id: geminiCredId, name: `Gemini Credential for ${workflowName}` } },
       },
       {
         parameters: {
@@ -197,12 +197,12 @@ function buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, 
   };
 }
 
-function getWorkflowTemplateByType(templateType, workflowName, chatwootCredId, geminiCredId, googleSheetsCredId) {
+function getWorkflowTemplateByType(templateType, workflowName, chatwootCredId, geminiCredId, googleSheetsCredId, ownerUserId) {
   const type = (templateType || 'standard').toLowerCase();
   switch (type) {
     case 'standard':
     default:
-      return buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, googleSheetsCredId);
+      return buildStandardAgentTemplate(workflowName, chatwootCredId, geminiCredId, googleSheetsCredId, ownerUserId);
   }
 }
 

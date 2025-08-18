@@ -23,6 +23,13 @@
 
 /* semantic color variables for this project */
 :root {
+  /* Brand palette */
+  --brand-gray-strong: #2D2D2D;
+  --brand-gray-light: #F5F5F5;
+  --brand-orange-strong: #FF6600;
+  --brand-orange-light: #FFA64D;
+  --brand-white: #FFFFFF;
+
   --color-background: var(--vt-c-white);
   --color-background-soft: var(--vt-c-white-soft);
   --color-background-mute: var(--vt-c-white-mute);

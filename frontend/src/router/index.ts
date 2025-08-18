@@ -2,13 +2,21 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import DashboardView from '../views/DashboardView.vue'
+import LandingView from '../views/LandingView.vue'
+import AgentsView from '../views/AgentsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
-      redirect: '/login'
+      name: 'home',
+      component: LandingView
+    },
+    {
+      path: '/agents',
+      name: 'agents',
+      component: AgentsView
     },
     {
       path: '/login',

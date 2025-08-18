@@ -47,7 +47,7 @@ const close = () => {
 }
 
 .modal {
-  background-color: white;
+  background-color: rgb(244, 1, 1);
   border-radius: var(--border-radius);
   box-shadow: var(--shadow-lg);
   width: 100%;

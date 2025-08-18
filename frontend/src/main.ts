@@ -3,6 +3,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
+import './assets/main.css'
 
 // Importações do PrimeVue 4.x
 import PrimeVue from 'primevue/config';
@@ -12,18 +13,18 @@ import Tooltip from 'primevue/tooltip';
 import 'primeicons/primeicons.css'; // Ícones
 import 'primeflex/primeflex.css'; // Utilitários de CSS
 
-// CSS Global para definir Arial como fonte padrão
+// CSS Global para definir Inter como fonte padrão
 const globalCSS = `
   * {
-    font-family: Arial, sans-serif !important;
+    font-family: Inter, Arial, sans-serif !important;
   }
   
   body {
-    font-family: Arial, sans-serif !important;
+    font-family: Inter, Arial, sans-serif !important;
   }
   
   .p-component {
-    font-family: Arial, sans-serif !important;
+    font-family: Inter, Arial, sans-serif !important;
   }
 `;
 

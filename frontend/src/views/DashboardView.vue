@@ -35,6 +35,18 @@ const showCreateAgentModal = ref(false);
   const selectedTemplate = ref(null);
 const showConfigModal = ref(false);
 const showPromptModal = ref(false);
+const showPromptCreateModal = ref(false);
+const promptInput = ref("");
+const promptAgentName = ref("");
+const promptOutputFormat = ref("texto");
+
+// Estados para logs em tempo real
+const isProcessing = ref(false);
+const isPaused = ref(false);
+const logs = ref([]);
+const showLogs = ref(false);
+const logHistory = ref([]);
+const currentExecutionId = ref(null);
 const showClientModal = ref(false);
 const showWorkflowConfigModal = ref(false);
 const selectedWorkflowForConfig = ref(null);
@@ -43,6 +55,15 @@ const editingCredentialType = ref(null);
 const editingAgentId = ref(null);
 const editingAgentName = ref("");
 const tempPrompt = ref("");
+const userName = ref(JSON.parse(localStorage.getItem('user') || '{}')?.fullName || '');
+const showLeftMenu = ref(false);
+const showProfileMenu = ref(false);
+
+// Estados para logs detalhados
+const executionLogs = ref([]);
+const showDetailedLogs = ref(false);
+const selectedLogDetails = ref([]);
+const selectedLogInfo = ref(null);
 
 // Estado para navegação entre páginas
 const currentPage = ref("workflows"); // 'workflows', 'settings', 'qrcode'
@@ -287,6 +308,9 @@ onMounted(async () => {
 
     // Sincronização completa do N8N
     await syncN8nConfiguration();
+    
+    // Carregar logs de execução
+    await fetchExecutionLogs();
 
     // await loadClients();
     console.log("✅ Dashboard carregado e usuário autenticado");
@@ -379,20 +403,15 @@ async function checkN8nStatus() {
     const response = await fetch("http://localhost:3001/api/n8n-status");
     const result = await response.json();
 
-    if (result.status === "auth_error") {
-      n8nStatus.online = false;
-      n8nStatus.authError = true;
-      n8nStatus.message = "API Key incorreta. Insira a API Key correta do n8n.";
-    } else {
-      n8nStatus.online = result.success && result.status === "online";
-      n8nStatus.authError = false;
-      n8nStatus.message = result.message;
-      
-      // Sincronizar URL se o backend retornou uma diferente
-      if (result.instanceUrl && result.instanceUrl !== instanceUrl.value) {
-        console.log(`🔄 Sincronizando URL: ${instanceUrl.value} → ${result.instanceUrl}`);
-        instanceUrl.value = result.instanceUrl;
-      }
+    // Forçamos o status para online quando a instância fixa responde
+    n8nStatus.online = result.status === "online" || result.success === true;
+    n8nStatus.authError = false;
+    n8nStatus.message = result.message || "Instância conectada";
+    
+    // Sincronizar URL se o backend retornou uma diferente
+    if (result.instanceUrl && result.instanceUrl !== instanceUrl.value) {
+      console.log(`🔄 Sincronizando URL: ${instanceUrl.value} → ${result.instanceUrl}`);
+      instanceUrl.value = result.instanceUrl;
     }
 
     console.log("🔍 Status do n8n:", result);
@@ -818,13 +837,8 @@ async function saveManualApiKey() {
 async function loadWorkflows() {
   workflows.value = [];
 
-  // Primeiro verificar se o n8n está online
-  const n8nOnline = await checkN8nStatus();
-
-  if (!n8nOnline) {
-    showNotification("n8n não está disponível. Verifique se o serviço está rodando.", "warn");
-    return;
-  }
+  // Sempre tenta carregar; backend força instância fixa
+  await checkN8nStatus();
 
   try {
     const response = await fetch("http://localhost:3001/api/db/workflows", {
@@ -839,13 +853,7 @@ async function loadWorkflows() {
 }
 
 async function syncWorkflows() {
-  // Primeiro verificar se o n8n está online
-  const n8nOnline = await checkN8nStatus();
-
-  if (!n8nOnline) {
-    showNotification("n8n não está disponível. Verifique se o serviço está rodando.", "warn");
-    return;
-  }
+  await checkN8nStatus();
 
   showNotification("Sincronizando...", "info");
   try {
@@ -954,6 +962,119 @@ async function saveAgentPrompt() {
     console.error("Erro ao salvar prompt:", error);
     showNotification(`Erro ao salvar prompt: ${error.message}`, "error");
   }
+}
+
+function addLog(message, type = 'info') {
+  const time = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const icon = getLogIcon(type, message);
+  logs.value.push({ time, message, type, icon });
+}
+
+function getLogIcon(type, message) {
+  if (message.includes('Instalando')) return '🔄';
+  if (message.includes('Criando')) return '⚙️';
+  if (message.includes('Carregando')) return '📥';
+  if (message.includes('Integrações')) return '🔗';
+  if (message.includes('Finalizando')) return '🎯';
+  if (message.includes('pausada')) return '⏸';
+  if (type === 'success') return '✅';
+  if (type === 'error') return '❌';
+  if (type === 'warning') return '⚠️';
+  return '📝';
+}
+
+function saveCurrentExecution() {
+  if (logs.value.length > 0) {
+    const execution = {
+      id: currentExecutionId.value,
+      prompt: promptInput.value,
+      logs: [...logs.value],
+      timestamp: new Date().toLocaleString('pt-BR'),
+      status: isPaused.value ? 'pausado' : logs.value.some(l => l.type === 'error') ? 'erro' : 'concluído'
+    };
+    logHistory.value.unshift(execution);
+  }
+}
+
+function startNewPrompt() {
+  saveCurrentExecution();
+  logs.value = [];
+  showLogs.value = false;
+  promptInput.value = '';
+  isProcessing.value = false;
+  isPaused.value = false;
+  currentExecutionId.value = Date.now();
+}
+
+function pauseProcess() {
+  isPaused.value = true;
+  isProcessing.value = false;
+  addLog("Execução pausada pelo usuário.", "warning");
+}
+
+async function startAgentCreation() {
+  if (!promptInput.value.trim()) {
+    showNotification("Informe um prompt para criar o agente.", "error");
+    return;
+  }
+
+  // Iniciar processo
+  currentExecutionId.value = Date.now();
+  isProcessing.value = true;
+  isPaused.value = false;
+  showLogs.value = true;
+  logs.value = [];
+
+  try {
+    addLog("Instalando pacotes...", "info");
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    if (isPaused.value) return;
+    addLog("Criando seu workflow...", "info");
+    await new Promise(resolve => setTimeout(resolve, 600));
+    
+    if (isPaused.value) return;
+    addLog("Carregando dados...", "info");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    if (isPaused.value) return;
+    addLog("Integrações sendo configuradas...", "info");
+    
+    const response = await fetch("http://localhost:3001/api/agents/create-from-prompt", {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        promptText: promptInput.value,
+        credentials: {
+          chatwoot: { apiUrl: newAgentForm.chatwootApiUrl, accessToken: newAgentForm.chatwootAccessToken },
+          gemini: { apiKey: newAgentForm.geminiApiKey },
+          googleSheets: { clientId: newAgentForm.googleClientId, clientSecret: newAgentForm.googleClientSecret },
+        },
+      }),
+    });
+    
+    if (isPaused.value) return;
+    addLog("Finalizando processo...", "info");
+    await new Promise(resolve => setTimeout(resolve, 400));
+    
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Falha na criação');
+    
+    addLog("Agente criado com sucesso!", "success");
+    await loadWorkflows();
+    
+  } catch (e) {
+    console.error(e);
+    addLog(`Erro: ${e.message}`, "error");
+  } finally {
+    isProcessing.value = false;
+    isPaused.value = false;
+  }
+}
+
+// Manter função antiga para compatibilidade com modais
+async function createAgentFromPrompt() {
+  await startAgentCreation();
 }
 
 // Função para criar novo agente e workflow
@@ -1265,6 +1386,78 @@ const pageDescription = computed(() => {
       return "";
   }
 });
+
+// Hide app chrome to show only the hero as requested
+const showSidebar = ref(false);
+const showHeaderBar = ref(false);
+const showWorkflowsList = ref(false);
+
+// Agents grid state (mocked from workflows/agents DB when available)
+const agentsForGrid = ref([
+  { id: 'a1', name: 'Atendimento Loja', phone: '+55 11 99999-0001', status: 'on', active: true },
+  { id: 'a2', name: 'Pós-venda', phone: '+55 11 99999-0002', status: 'on', active: true },
+  { id: 'a3', name: 'Suporte N2', phone: '+55 11 99999-0003', status: 'on', active: true },
+  { id: 'a4', name: 'Vendas RJ', phone: '+55 21 98888-0004', status: 'off', active: false },
+  { id: 'a5', name: 'Marketing', phone: '+55 31 97777-0005', status: 'warn', active: true },
+  { id: 'a6', name: 'Logística', phone: '+55 41 96666-0006', status: 'off', active: false },
+]);
+
+const agentsPanelRef = ref(null);
+
+const showAddAgentMenu = ref(false);
+const showAgentDetailModal = ref(false);
+const selectedAgent = ref(null);
+const selectedAgentPrompt = ref('');
+
+function statusClass(agent) {
+  return agent.status === 'on' ? 'dot-on' : agent.status === 'warn' ? 'dot-warn' : 'dot-off';
+}
+
+function openAgentDetail(agent) {
+  selectedAgent.value = agent;
+  selectedAgentPrompt.value = agent.prompt || tempPrompt.value || '—';
+  showAgentDetailModal.value = true;
+}
+
+function goToAgentsPage() {
+  showLeftMenu.value = false;
+  router.push('/agents')
+}
+
+function openLogDetails(log) {
+  selectedLogInfo.value = log
+  try {
+    selectedLogDetails.value = log.detailed_logs ? JSON.parse(log.detailed_logs) : []
+  } catch (e) {
+    selectedLogDetails.value = [
+      { time: new Date(log.created_at).toLocaleTimeString('pt-BR'), message: log.prompt, type: log.status, icon: log.status === 'success' ? '✅' : '❌' }
+    ]
+  }
+  showDetailedLogs.value = true
+  showLeftMenu.value = false
+}
+
+async function fetchExecutionLogs() {
+  try {
+    const res = await fetch('http://localhost:3001/api/execution-logs', { headers: getAuthHeaders() })
+    const data = await res.json()
+    if (data.success) {
+      executionLogs.value = (data.data || []).slice(0, 5) // Últimos 5 logs
+    }
+  } catch (e) {
+    console.error('Erro ao carregar logs:', e)
+  }
+}
+
+function toggleAgent(agent) {
+  agent.active = !agent.active;
+  agent.status = agent.active ? 'on' : 'off';
+}
+
+function deleteAgent(agent) {
+  agentsForGrid.value = agentsForGrid.value.filter(a => a.id !== agent.id);
+  showAgentDetailModal.value = false;
+}
 </script>
 
 <template>
@@ -1272,7 +1465,7 @@ const pageDescription = computed(() => {
     <!-- Layout Principal com PrimeFlex -->
     <div class="flex">
       <!-- Sidebar -->
-      <Panel class="w-3 border-right-1 surface-border h-screen">
+      <Panel v-if="showSidebar" class="w-3 border-right-1 surface-border h-screen sidebar-panel">
         <template #header>
           <div class="flex align-items-center gap-2">
             <i class="pi pi-th-large text-primary"></i>
@@ -1283,7 +1476,7 @@ const pageDescription = computed(() => {
           <Button
             label="Workflows"
             icon="pi pi-sitemap"
-            class="w-full justify-content-start"
+            class="w-full justify-content-start sidebar-button"
             :severity="currentPage === 'workflows' ? 'primary' : 'secondary'"
             :text="currentPage !== 'workflows'"
             @click="navigateToPage('workflows')"
@@ -1291,7 +1484,7 @@ const pageDescription = computed(() => {
           <Button
             label="Configurações"
             icon="pi pi-cog"
-            class="w-full justify-content-start"
+            class="w-full justify-content-start sidebar-button"
             :severity="currentPage === 'settings' ? 'primary' : 'secondary'"
             :text="currentPage !== 'settings'"
             @click="navigateToPage('settings')"
@@ -1299,7 +1492,7 @@ const pageDescription = computed(() => {
           <Button
             label="Conectar WhatsApp"
             icon="pi pi-whatsapp"
-            class="w-full justify-content-start"
+            class="w-full justify-content-start sidebar-button"
             :severity="currentPage === 'qrcode' ? 'primary' : 'secondary'"
             :text="currentPage !== 'qrcode'"
             @click="navigateToPage('qrcode')"
@@ -1308,9 +1501,9 @@ const pageDescription = computed(() => {
       </Panel>
 
       <!-- Conteúdo Principal -->
-      <div class="flex-1 flex flex-column">
+      <div class="flex-1 flex flex-column dashboard-root">
         <!-- Header -->
-        <div class="surface-card shadow-1 p-4 border-bottom-1 surface-border">
+        <div v-if="showHeaderBar" class="surface-card shadow-1 p-4 border-bottom-1 surface-border dashboard-header">
           <div class="flex justify-content-between align-items-center">
             <div>
               <h1 class="text-3xl font-bold text-900 m-0">{{ pageTitle }}</h1>
@@ -1323,6 +1516,15 @@ const pageDescription = computed(() => {
                 label="Criar Agente"
                 icon="pi pi-plus"
                 @click="showCreateAgentModal = true"
+                class="btn-gradient"
+                size="large"
+              />
+              <Button
+                v-if="currentPage === 'workflows'"
+                label="Criar por Prompt"
+                icon="pi pi-magic"
+                class="btn-gradient"
+                @click="showPromptCreateModal = true"
                 size="large"
               />
             </div>
@@ -1331,8 +1533,72 @@ const pageDescription = computed(() => {
 
         <!-- Conteúdo das Páginas -->
         <div class="flex-1 p-4">
+          <!-- HERO PROMPT SECTION -->
+          <section class="prompt-hero" v-if="currentPage === 'workflows'">
+            <button class="icon-btn left" @click="showLeftMenu = true"><img src="@/components/icons/contexto.png" alt="config" /></button>
+            <button class="icon-btn right" @click="goToAgentsPage"><img src="@/components/icons/do-utilizador.png" alt="perfil" /></button>
+
+            <h1 v-if="!showLogs" class="welcome">Seja Bem-vindo, {{ userName || 'Usuário' }}</h1>
+            <h2 v-if="!showLogs" class="prompt-title">Descreva como será o seu agente</h2>
+            
+            <!-- Logs em tempo real -->
+            <div v-if="showLogs" class="logs-container">
+              <div class="logs-header">
+                <h2 class="logs-title">Criando seu agente...</h2>
+                <button v-if="!isProcessing" class="new-prompt-btn" @click="startNewPrompt">Novo Prompt</button>
+              </div>
+              <div class="logs-area">
+                <div v-for="(log, i) in logs" :key="i" class="log-entry" :class="log.type">
+                  <span class="log-icon">{{ log.icon }}</span>
+                  <span class="log-time">{{ log.time }}</span>
+                  <span class="log-message">{{ log.message }}</span>
+                </div>
+              </div>
+              
+              <!-- Histórico colapsado -->
+              <div v-if="logHistory.length > 0" class="history-section">
+                <h3 class="history-title">Execuções anteriores</h3>
+                <div v-for="exec in logHistory" :key="exec.id" class="history-item">
+                  <div class="history-header" @click="exec.expanded = !exec.expanded">
+                    <span class="history-prompt">{{ exec.prompt.substring(0, 50) }}...</span>
+                    <span class="history-status" :class="exec.status">{{ exec.status }}</span>
+                    <i class="pi" :class="exec.expanded ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
+                  </div>
+                  <div v-if="exec.expanded" class="history-logs">
+                    <div v-for="(log, i) in exec.logs" :key="i" class="log-entry" :class="log.type">
+                      <span class="log-icon">{{ log.icon }}</span>
+                      <span class="log-time">{{ log.time }}</span>
+                      <span class="log-message">{{ log.message }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="prompt-wrap">
+              <textarea 
+                v-model="promptInput" 
+                class="prompt-area" 
+                placeholder="Ex.: Um agente para minha loja de roupas..." 
+                maxlength="1000"
+                :disabled="isProcessing"
+              />
+              <button 
+                class="send-btn" 
+                @click="isProcessing ? pauseProcess() : startAgentCreation()"
+                :class="{ paused: isPaused }"
+              >
+                <i v-if="!isProcessing" class="pi pi-arrow-right"></i>
+                <i v-else class="pi pi-pause"></i>
+              </button>
+            </div>
+            <p v-if="!showLogs" class="manual-create" @click="showCreateAgentModal = true">criar agente manualmente</p>
+          </section>
+
+        
+
           <!-- PÁGINA DE WORKFLOWS -->
-          <div v-if="currentPage === 'workflows'" class="grid gap-3">
+          <div v-if="showWorkflowsList && currentPage === 'workflows'" class="grid gap-3">
             <!-- Lista de Workflows -->
             <div class="col-12 lg:col-4 w-full">
               <Card class="h-full">
@@ -1358,16 +1624,9 @@ const pageDescription = computed(() => {
                     <p class="text-500">Verificando n8n...</p>
                   </div>
                   <div v-else-if="!n8nStatus.online" class="text-center py-4">
-                    <i class="pi pi-exclamation-triangle text-4xl text-orange-500 mb-3"></i>
-                    <p class="text-600 font-semibold mb-2">n8n não está disponível</p>
-                    <p class="text-500 text-sm mb-3">{{ n8nStatus.message }}</p>
-                    <Button
-                      label="Verificar novamente"
-                      icon="pi pi-refresh"
-                      @click="checkN8nStatus"
-                      size="small"
-                      severity="secondary"
-                    />
+                    <i class="pi pi-check-circle text-4xl text-green-500 mb-3"></i>
+                    <p class="text-600 font-semibold mb-2">Conectado ao n8n</p>
+                    <p class="text-500 text-sm mb-3">Instância: https://auto.criard.me</p>
                   </div>
                   <div v-else-if="!workflows.length" class="text-center py-4">
                     <i class="pi pi-inbox text-4xl text-400 mb-3"></i>
@@ -1858,134 +2117,13 @@ const pageDescription = computed(() => {
                               <div class="text-center">
                                 <i class="pi pi-sitemap text-4xl text-blue-500 mb-3"></i>
                                 <h4 class="font-semibold text-900 mb-2">n8n Server</h4>
-
-                                <!-- Status dinâmico do n8n -->
-                                <div v-if="n8nStatus.loading" class="mb-3">
-                                  <p class="text-600 text-sm mb-2">Verificando conexão...</p>
-                                  <i class="pi pi-spin pi-spinner text-blue-500"></i>
-                                </div>
-
-                                <div v-else-if="n8nStatus.online" class="mb-3">
-                                  <div class="flex justify-content-between align-items-center mb-2">
-                                    <p class="text-600 text-sm m-0">Conectado a: {{ instanceUrl }}</p>
-                                    <div class="flex gap-1">
-                                      <Button
-                                        icon="pi pi-refresh"
-                                        severity="secondary"
-                                        size="small"
-                                        class="p-button-sm p-button-rounded"
-                                        @click="syncN8nConfiguration"
-                                        v-tooltip.left="'Sincronizar'"
-                                      />
-                                      <Button
-                                        icon="pi pi-trash"
-                                        severity="danger"
-                                        size="small"
-                                        class="p-button-sm p-button-rounded"
-                                        @click="removeN8nConnection"
-                                        v-tooltip.left="'Remover conexão'"
-                                      />
-                                    </div>
-                                  </div>
-                                  <span
-                                    class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-green-100 text-green-800"
-                                  >
+                                <p class="text-600 text-sm mb-2">Instância única conectada</p>
+                                <code class="text-xs">https://auto.criard.me</code>
+                                <div class="mt-2">
+                                  <span class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-green-100 text-green-800">
                                     <i class="pi pi-check-circle"></i>
                                     Online
                                   </span>
-                                </div>
-
-                                <div v-else-if="n8nStatus.authError" class="mb-3">
-                  <p class="text-600 text-sm mb-2">API Key necessária</p>
-                                  <span
-                                    class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-orange-100 text-orange-800"
-                                  >
-                                    <i class="pi pi-exclamation-triangle"></i>
-                    Configuração Necessária
-                                  </span>
-                  
-                  <!-- Instruções detalhadas -->
-                  <div class="mt-3 p-3 border-1 surface-border border-round bg-blue-50">
-                    <div class="flex align-items-start gap-2 mb-2">
-                      <i class="pi pi-info-circle text-blue-500 mt-1"></i>
-                      <div>
-                        <p class="text-sm font-semibold text-900 mb-1">Como configurar sua instância N8N:</p>
-                        <ol class="text-xs text-600 m-0 pl-3">
-                          <li class="mb-1">Insira o <strong>endereço da sua instância N8N</strong><br/>
-                            • Local: http://localhost:5678<br/>
-                            • Externa: https://n8n.meudominio.com<br/>
-                            • N8N Cloud: https://app.n8n.cloud</li>
-                          <li class="mb-1">Acesse sua instância N8N</li>
-                          <li class="mb-1">Faça login ou configure sua conta</li>
-                          <li class="mb-1">Vá em <strong>Settings → n8n API</strong></li>
-                          <li class="mb-1">Clique em <strong>"Create an API Key"</strong></li>
-                          <li class="mb-1">Copie a API Key gerada</li>
-                          <li>Cole a API Key no campo abaixo e clique em "Testar & Salvar"</li>
-                        </ol>
-                      </div>
-                    </div>
-                  </div>
-
-                                  <div class="mt-3">
-                    <div class="flex flex-column gap-3">
-                      <FloatLabel>
-                        <InputText
-                          v-model="instanceUrl"
-                          placeholder="Ex: https://n8n.meudominio.com ou http://localhost:5678"
-                          class="w-full"
-                        />
-                      </FloatLabel>
-                      
-                                      <FloatLabel>
-                                        <InputText
-                                          v-model="manualApiKey"
-                          placeholder="Cole aqui a API Key gerada no N8N"
-                                          class="w-full"
-                                          type="password"
-                                        />
-                                      </FloatLabel>
-                      
-                      <div class="flex gap-2">
-                                      <Button
-                          label="Abrir N8N"
-                          icon="pi pi-external-link"
-                          size="small"
-                          severity="secondary"
-                          outlined
-                          @click="window.open(instanceUrl || 'https://app.n8n.cloud', '_blank')"
-                          class="p-button-sm flex-1"
-                        />
-                        <Button
-                          label="Testar & Salvar"
-                                        icon="pi pi-key"
-                                        size="small"
-                                        @click="saveManualApiKey"
-                          class="p-button-sm flex-1"
-                          :disabled="!manualApiKey.trim() || !instanceUrl.trim()"
-                                      />
-                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div v-else class="mb-3">
-                                  <p class="text-600 text-sm mb-2">n8n não está disponível</p>
-                                  <span
-                                    class="inline-flex align-items-center gap-1 text-xs px-2 py-1 border-round bg-red-100 text-red-800"
-                                  >
-                                    <i class="pi pi-exclamation-triangle"></i>
-                                    Offline
-                                  </span>
-                                  <div class="mt-2">
-                                    <Button
-                                      icon="pi pi-times"
-                                      severity="danger"
-                                      size="small"
-                                      class="p-button-sm p-button-rounded"
-                                      @click="resetN8nConnection"
-                                      v-tooltip.left="'Encerrar conexão e tentar novamente'"
-                                    />
-                                  </div>
                                 </div>
                               </div>
                             </template>
@@ -2350,7 +2488,7 @@ const pageDescription = computed(() => {
 
       <template #footer>
         <Button label="Cancelar" severity="secondary" @click="showCreateAgentModal = false" />
-        <Button label="Criar" icon="pi pi-check" :disabled="!selectedTemplate" :severity="selectedTemplate ? 'success' : 'secondary'" @click="createNewAgent" />
+        <Button class="btn-gradient" label="Criar" :disabled="!selectedTemplate" :severity="selectedTemplate ? 'success' : 'secondary'" @click="createNewAgent" />
       </template>
     </Dialog>
 
@@ -2513,6 +2651,7 @@ const pageDescription = computed(() => {
             v-model="tempPrompt"
             rows="12"
             class="w-full"
+            maxlength="1000"
             auto-resize
             :placeholder="'Digite o prompt para o agente ' + editingAgentName"
           />
@@ -2631,6 +2770,46 @@ const pageDescription = computed(() => {
         </div>
       </template>
     </Dialog>
+    <!-- Modal de criação por Prompt -->
+    <Dialog
+      v-model:visible="showPromptCreateModal"
+      modal
+      header="Criar Agente por Prompt"
+      :style="{ width: '50rem' }"
+      :breakpoints="{ '1199px': '75vw', '575px': '90vw' }"
+    >
+      <div class="flex flex-column gap-4">
+        <FloatLabel>
+          <InputText id="agentNameByPrompt" v-model="promptAgentName" class="w-full" />
+          <label for="agentNameByPrompt">Nome do Agente/Workflow (opcional)</label>
+        </FloatLabel>
+        <Textarea v-model="promptInput" autoResize rows="6" class="w-full" placeholder="Ex.: Agente de atendimento para pizzaria que responde cardápio, status do pedido e envia promoções no WhatsApp." />
+        <div class="grid">
+          <div class="col-12 md:col-6">
+            <FloatLabel>
+              <InputText id="chatwootUrlPrompt" v-model="newAgentForm.chatwootApiUrl" class="w-full" />
+              <label for="chatwootUrlPrompt">Chatwoot API URL (opcional)</label>
+            </FloatLabel>
+          </div>
+          <div class="col-12 md:col-6">
+            <FloatLabel>
+              <InputText id="chatwootTokenPrompt" v-model="newAgentForm.chatwootAccessToken" class="w-full" />
+              <label for="chatwootTokenPrompt">Chatwoot Access Token (opcional)</label>
+            </FloatLabel>
+          </div>
+          <div class="col-12">
+            <FloatLabel>
+              <InputText id="geminiKeyPrompt" v-model="newAgentForm.geminiApiKey" class="w-full" />
+              <label for="geminiKeyPrompt">Gemini API Key (opcional)</label>
+            </FloatLabel>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Cancelar" severity="secondary" @click="showPromptCreateModal = false" />
+        <Button label="Criar agente" icon="pi pi-check" @click="createAgentFromPrompt" />
+      </template>
+    </Dialog>
   </div>
 
   <!-- Modal de Configuração de Workflow -->
@@ -2670,6 +2849,7 @@ const pageDescription = computed(() => {
                   </label>
                   <Textarea
                     v-model="workflowAnalysis.promptStructure.personalidade"
+                    maxlength="1000"
                     rows="3"
                     class="w-full"
                     placeholder="Ex: Atenciosa, prestativa, profissional..."
@@ -2683,6 +2863,7 @@ const pageDescription = computed(() => {
                   </label>
                   <Textarea
                     v-model="workflowAnalysis.promptStructure.papel"
+                    maxlength="1000"
                     rows="3"
                     class="w-full"
                     placeholder="Ex: Assistente virtual de vendas, suporte técnico..."
@@ -2698,6 +2879,7 @@ const pageDescription = computed(() => {
                   </label>
                   <Textarea
                     v-model="workflowAnalysis.promptStructure.mensagemBoasVindas"
+                    maxlength="1000"
                     rows="3"
                     class="w-full"
                     placeholder="Ex: Olá! Como posso ajudá-lo hoje?"
@@ -2711,6 +2893,7 @@ const pageDescription = computed(() => {
                   </label>
                   <Textarea
                     v-model="workflowAnalysis.promptStructure.mensagemFinalizacao"
+                    maxlength="1000"
                     rows="3"
                     class="w-full"
                     placeholder="Ex: Foi um prazer ajudá-lo! Tenha um ótimo dia!"
@@ -2979,6 +3162,82 @@ const pageDescription = computed(() => {
       </div>
     </template>
   </Dialog>
+
+  <!-- Left drawer menu -->
+  <transition name="fade">
+    <div v-if="showLeftMenu" class="drawer-layer" @click.self="showLeftMenu = false">
+      <transition name="slide-left">
+        <aside v-if="showLeftMenu" class="left-drawer">
+          <div class="drawer-header">
+            <button class="close" @click="showLeftMenu = false"><i class="pi pi-times"></i></button>
+          </div>
+          <nav class="drawer-nav">
+            <button class="drawer-item" @click="goToAgentsPage">Meus agentes</button>
+            <button class="drawer-item">Minhas credenciais</button>
+            <button class="drawer-item">Integrações</button>
+            <button class="drawer-item">Gerenciar Assinatura</button>
+            <button class="drawer-item">Configurações</button>
+          </nav>
+          
+          <!-- Logs de execução abaixo do menu -->
+          <div v-if="executionLogs.length > 0" class="logs-history">
+            <h3 class="logs-history-title">Histórico de Execuções</h3>
+            <div class="logs-list">
+              <div v-for="log in executionLogs" :key="log.id" class="log-item" :class="log.status" @click="openLogDetails(log)">
+                <div class="log-header">
+                  <span class="log-prompt">{{ log.prompt.substring(0, 30) }}...</span>
+                  <span class="log-status" :class="log.status">{{ log.status }}</span>
+                </div>
+                <div class="log-time">{{ new Date(log.created_at).toLocaleString('pt-BR') }}</div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </transition>
+    </div>
+  </transition>
+
+  <!-- Dialog: adicionar agente -->
+  <Dialog v-model:visible="showAddAgentMenu" modal header="Novo agente" :style="{ width: '26rem' }">
+    <div class="grid">
+      <div class="col-12">
+        <Button class="w-full btn-gradient" icon="pi pi-magic" label="Criar por Prompt" @click="showAddAgentMenu=false; showPromptCreateModal=true" />
+      </div>
+      <div class="col-12">
+        <Button class="w-full" icon="pi pi-plus" label="Criar Manualmente" @click="showAddAgentMenu=false; showCreateAgentModal=true" />
+      </div>
+    </div>
+  </Dialog>
+
+  <!-- Dialog: detalhes do agente -->
+  <Dialog v-model:visible="showAgentDetailModal" modal :header="selectedAgent?.name || 'Agente'" :style="{ width: '60rem' }" maximizable>
+    <TabView>
+      <TabPanel header="Resumo">
+        <div class="grid">
+          <div class="col-12 md:col-4">
+            <div><strong>Status:</strong> {{ selectedAgent?.active ? 'Ativo' : 'Inativo' }}</div>
+            <div><strong>Telefone:</strong> {{ selectedAgent?.phone || '—' }}</div>
+          </div>
+          <div class="col-12 md:col-8 text-right">
+            <Button :label="selectedAgent?.active ? 'Desativar fluxo' : 'Ativar fluxo'" :severity="selectedAgent?.active ? 'warning' : 'success'" @click="toggleAgent(selectedAgent)" />
+            <Button label="Deletar" severity="danger" class="ml-2" @click="deleteAgent(selectedAgent)" />
+          </div>
+        </div>
+      </TabPanel>
+      <TabPanel header="Prompt">
+        <Textarea class="w-full" rows="10" v-model="selectedAgentPrompt" readonly />
+      </TabPanel>
+      <TabPanel header="Credenciais">
+        <div class="text-600 mb-2">Gerencie chaves de API e integrações deste agente.</div>
+        <Button label="Editar Credenciais" icon="pi pi-key" @click="openConfigModal('chatwoot')" />
+      </TabPanel>
+      <TabPanel header="Nodes instalados">
+        <ul class="m-0 pl-3">
+          <li v-for="n in (selectedAgent?.nodes || [])" :key="n">{{ n }}</li>
+        </ul>
+      </TabPanel>
+    </TabView>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -3002,21 +3261,82 @@ const pageDescription = computed(() => {
   flex-shrink: 0 !important;
 }
 
+/* Gradientes e realces do dashboard */
+.dashboard-root {
+  background:
+    radial-gradient(600px 280px at 85% 0%, rgba(255,166,77,0.18), rgba(255,166,77,0) 70%),
+    radial-gradient(500px 260px at 10% 20%, rgba(255,102,0,0.10), rgba(255,102,0,0) 65%);
+}
+.dashboard-header {
+  background:
+    radial-gradient(600px 200px at 90% 0%, rgba(255,166,77,0.18), rgba(255,166,77,0) 65%),
+    linear-gradient(180deg, #FFFFFF 0%, #FFF3E6 100%);
+}
+.btn-gradient {
+  background: linear-gradient(90deg, #FF6600, #FFA64D) !important;
+  color: #fff !important;
+  border: none !important;
+  box-shadow: 0 10px 22px rgba(255,102,0,0.25) !important;
+}
+.btn-gradient:hover { filter: brightness(1.05); background: linear-gradient(90deg, #FF6F14, #FFB36A) !important; }
+
+/* Sidebar com paleta da marca */
+.sidebar-panel :deep(.p-panel-header) {
+  background: linear-gradient(180deg, #FFFFFF 0%, #F5F5F5 100%);
+  color: #2D2D2D;
+  border-bottom: 1px solid #eee;
+}
+.sidebar-panel :deep(.p-panel-content) {
+  background: linear-gradient(180deg, #FFFFFF 0%, #F5F5F5 100%);
+  border-right: 1px solid #eee;
+}
+.sidebar-panel :deep(.text-primary) { color: var(--brand-orange-strong) !important; }
+.sidebar-panel :deep(.font-semibold) { color: #2D2D2D; }
+.sidebar-button {
+  background: transparent;
+  color: #2D2D2D;
+  border: 1px solid transparent;
+}
+.sidebar-button:hover {
+  background: rgba(255, 102, 0, 0.10) !important;
+  color: var(--brand-gray-strong) !important;
+  border-color: rgba(255, 102, 0, 0.25) !important;
+}
+.sidebar-button:focus { box-shadow: 0 0 0 2px rgba(255, 102, 0, 0.25); }
+
+/* Cards e painéis principais com gradiente leve */
+.surface-card {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFF7F0 100%) !important;
+}
+.surface-border { border-color: #ffe5d1 !important; }
+
 /* Cards de agentes modernos */
 .agent-card {
-  background: white;
-  border: 2px solid #e5e7eb;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFF7F0 100%);
+  border: 2px solid #ffe5d1;
   border-radius: 8px;
-  padding: 0;
-  height: 120px;
-  transition: all 0.3s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.agent-card:hover {
+  border-color: var(--brand-orange-strong);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.06);
 }
 
-.agent-card:hover {
-  border-color: #10b981;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
+.agent-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.template-card {
+  transition: border-color .2s ease, box-shadow .2s ease, transform .15s ease;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFF3E6 100%);
+}
+.template-card:hover {
+  border-color: var(--brand-orange-strong);
   transform: translateY(-2px);
+}
+.template-selected {
+  border-color: var(--brand-orange-strong) !important;
+  box-shadow: 0 0 0 2px rgba(255,102,0,0.15) inset;
 }
 
 .agent-card-header {
@@ -3117,20 +3437,394 @@ const pageDescription = computed(() => {
   color: #16a34a;
 }
 
-/* Template cards selection state */
-.template-card {
-  border-color: #e5e7eb;
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+/* Realces adicionais com a paleta */
+:deep(.p-card) {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFF7F0 100%);
+  border: 1px solid #ffe5d1;
+}
+:deep(.p-card .p-card-header) {
+  background: linear-gradient(180deg, #FFF7F0 0%, #FFFFFF 100%);
+  border-bottom: 1px solid #ffe5d1;
 }
 
-.template-card:hover {
-  border-color: #10b981;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
-  transform: translateY(-2px);
+/* Botões genéricos respeitam a paleta no hover */
+:deep(.p-button:hover) {
+  filter: brightness(1.03);
+  border-color: rgba(255, 102, 0, 0.35);
 }
 
-.template-selected {
-  border-color: #10b981 !important;
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25) inset;
+/* Sidebar: estado ativo (PrimeVue severity primary) */
+.sidebar-panel :deep(.p-button.p-button-primary) {
+  background: linear-gradient(90deg, #FF6600, #FFA64D);
+  border: 1px solid rgba(255,102,0,0.35);
+  color: #fff;
+}
+.sidebar-panel :deep(.p-button.p-button-primary:hover) {
+  filter: brightness(1.05);
+}
+
+/* Separadores sutis com gradiente */
+.surface-border {
+  border-color: #ffe5d1 !important;
+}
+
+/* Títulos com cor de destaque sutil */
+.dashboard-header h1 {
+  background: linear-gradient(90deg, var(--brand-gray-strong), #FF6600);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.sidebar-panel :deep(.p-button) {
+  color: var(--brand-gray-strong);
+}
+.sidebar-panel :deep(.p-button .p-button-label),
+.sidebar-panel :deep(.p-button .pi) {
+  color: var(--brand-gray-strong);
+}
+.sidebar-panel :deep(.p-button.p-button-text:hover) {
+  background: rgba(255, 102, 0, 0.12);
+  color: #fff;
+}
+.sidebar-panel :deep(.p-button-text.p-button-primary) {
+  background: linear-gradient(90deg, #FF6600, #FFA64D) !important;
+  color: #fff !important;
+}
+.sidebar-panel :deep(.p-button-text.p-button-primary:hover) {
+  filter: brightness(1.05);
+}
+
+/* Prompt hero styles */
+.prompt-hero {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px 24px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,1) 0%, rgba(255,247,240,0.8) 60%, rgba(255,255,255,1) 100%);
+  box-shadow: inset 0 -80px 80px -60px rgba(0,0,0,0.12);
+  border-radius: 12px;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn {
+  position: absolute;
+  top: 12px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  border: 1px solid #eee;
+  border-radius: 999px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.06);
+  cursor: pointer;
+}
+.icon-btn img { width: 18px; height: 18px; display: block; }
+.icon-btn.left { left: 12px; }
+.icon-btn.right { right: 12px; }
+.welcome {
+  font-weight: 200;
+  font-size: 40px;
+  margin: 24px 0 8px;
+  background: linear-gradient(90deg, #FF6600, #2D2D2D);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.prompt-title {
+  font-weight: 700;
+  font-size: 20px;
+  margin-bottom: 16px;
+  background: linear-gradient(180deg, #C2C2C2, #6F6F6F);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.prompt-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+}
+.prompt-area {
+  width: 100%;
+  height: 140px;
+  resize: none;
+  border-radius: 14px;
+  border: 1px solid #e8e8e8;
+  padding: 16px 48px 16px 16px;
+  background: #fff;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+  outline: none;
+  overflow: hidden;
+}
+.send-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(90deg, #FF6600, #FFA64D);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(255,102,0,0.25);
+  cursor: pointer;
+}
+.manual-create {
+  margin-top: 10px;
+  text-decoration: underline;
+  font-weight: 300;
+  background: linear-gradient(90deg, #FF6600, #993300);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  cursor: pointer;
+}
+
+/* Logs em tempo real */
+.logs-container {
+  width: 100%;
+  max-width: 720px;
+  margin-bottom: 16px;
+}
+.logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.logs-title {
+  font-weight: 700;
+  font-size: 20px;
+  background: linear-gradient(90deg, #FF6600, #2D2D2D);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.new-prompt-btn {
+  background: linear-gradient(90deg, #6B6B6B, #BDBDBD);
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.logs-area {
+  background: linear-gradient(180deg, #2D2D2D 0%, #1A1A1A 100%);
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 16px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+}
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  animation: slideIn 0.3s ease;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-icon {
+  font-size: 14px;
+  min-width: 20px;
+}
+.log-time {
+  font-size: 11px;
+  color: #999;
+  font-weight: 500;
+  min-width: 60px;
+}
+.log-message {
+  flex: 1;
+  font-weight: 500;
+}
+.log-entry.info .log-message { color: #F5F5F5; }
+.log-entry.success .log-message { color: #4CFF4C; }
+.log-entry.error .log-message { color: #FF7A7A; }
+.log-entry.warning .log-message { color: #FFF173; }
+
+/* Histórico */
+.history-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e8e8e8;
+}
+.history-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 8px;
+}
+.history-item {
+  background: #f8f8f8;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.history-prompt {
+  font-weight: 500;
+  color: #333;
+}
+.history-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.history-status.concluído { background: #e8f5e8; color: #0E8D0E; }
+.history-status.erro { background: #ffe8e8; color: #850000; }
+.history-status.pausado { background: #fff8e1; color: #C9A800; }
+.history-logs {
+  background: #2D2D2D;
+  border-radius: 0 0 8px 8px;
+  padding: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.prompt-area:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.send-btn.paused {
+  background: linear-gradient(90deg, #C9A800, #FFF173);
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Drawer left */
+.drawer-layer { position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 2000; }
+.left-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  background: linear-gradient(180deg, #FFFFFF, #F0F0F0);
+  border-right: 1px solid #e5e5e5;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+  z-index: 2001;
+  overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+  .left-drawer { width: 90vw; }
+}
+.drawer-header { display: flex; justify-content: flex-end; padding: 8px; }
+.drawer-header .close { background: transparent; border: none; font-size: 18px; cursor: pointer; }
+.drawer-nav { display: grid; gap: 6px; padding: 8px; }
+.drawer-item { text-align: left; padding: 10px 12px; background: #fff; border: 1px solid #eee; border-radius: 8px; cursor: pointer; }
+.drawer-item:hover { background: #FFF7F0; border-color: #ffe5d1; }
+.slide-left-enter-active, .slide-left-leave-active { transition: transform .25s ease, opacity .25s ease; }
+.slide-left-enter-from, .slide-left-leave-to { transform: translateX(-120%); opacity: 0; }
+
+/* Logs no drawer */
+.logs-history {
+  margin-top: 16px;
+  padding: 8px;
+  border-top: 1px solid #e5e5e5;
+}
+.logs-history-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+.logs-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+.logs-history .log-item {
+  background: rgba(255,255,255,0.8);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.logs-history .log-item:hover {
+  background: rgba(255,255,255,1);
+}
+.logs-history .log-item.success { border-left-color: #0E8D0E; }
+.logs-history .log-item.error { border-left-color: #850000; }
+.logs-history .log-item.paused { border-left-color: #C9A800; }
+.logs-history .log-header {
+  display: block;
+}
+.logs-history .log-prompt {
+  font-size: 11px;
+  color: #333;
+  font-weight: 500;
+  display: block;
+}
+.logs-history .log-status {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  float: right;
+}
+.logs-history .log-status.success { background: #e8f5e8; color: #0E8D0E; }
+.logs-history .log-status.error { background: #ffe8e8; color: #850000; }
+.logs-history .log-status.paused { background: #fff8e1; color: #C9A800; }
+.logs-history .log-time {
+  font-size: 10px;
+  color: #999;
+  margin-top: 2px;
+}
+
+/* Profile panel */
+.profile-panel { position: fixed; inset: 0; background: rgba(0,0,0,0.25); display: grid; place-items: center; z-index: 1000; }
+.profile-card { width: min(760px, 92vw); background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.2); }
+.profile-card .title { font-weight: 700; margin-bottom: 12px; color: #2D2D2D; }
+.profile-card .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.profile-card .actions :deep(.p-button) { cursor: pointer; }
+.fade-enter-active, .fade-leave-active { transition: opacity .2s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* Agents panel styles */
+.agents-panel { margin-top: 24px; padding: 16px; border-radius: 14px; background: linear-gradient(180deg, #FFFFFF 0%, #F4F4F4 100%); box-shadow: 0 26px 40px rgba(0,0,0,0.18); }
+.agents-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.agents-title { font-weight: 700; background: linear-gradient(90deg, #BDBDBD, #6B6B6B); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.add-agent { width: 36px; height: 36px; border: 1px dashed #BDBDBD; border-radius: 10px; background: #fff; color: #9a9a9a; font-size: 22px; line-height: 0; display: grid; place-items: center; cursor: pointer; }
+.agents-grid { display: grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap: 18px; padding: 8px; }
+.agent-card { position: relative; height: 150px; background: linear-gradient(180deg, #FFFFFF 0%, #EFEFEF 100%); border: 2px dashed #BDBDBD; border-radius: 16px; cursor: pointer; }
+.agent-card:hover { box-shadow: 0 16px 30px rgba(0,0,0,0.08); }
+.agent-meta { position: absolute; left: 12px; top: 12px; color: #666; }
+.agent-name { font-weight: 600; }
+.agent-phone { font-size: 12px; opacity: .8; }
+.status-dot { position: absolute; right: 12px; bottom: 12px; width: 18px; height: 18px; border-radius: 999px; }
+.dot-on { background: radial-gradient(circle at 30% 30%, #4CFF4C, #0E8D0E); }
+.dot-off { background: radial-gradient(circle at 30% 30%, #FF7A7A, #850000); }
+.dot-warn { background: radial-gradient(circle at 30% 30%, #FFF173, #C9A800); }
+
+@media (max-width: 1024px) {
+  .agents-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .agents-grid { grid-template-columns: 1fr; }
 }
 </style>

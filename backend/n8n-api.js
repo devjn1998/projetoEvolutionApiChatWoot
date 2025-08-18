@@ -45,16 +45,17 @@ class N8nAPI {
         // --- Faz a chamada fetch ---
         const response = await fetch(fullUrl, config);
         // --- Verifica se a resposta é ok ---
-            if (!response.ok) {
+        if (!response.ok) {
             const errorText = await response.text();
             console.error(`❌ N8nAPI Error: ${response.status} ${response.statusText} em ${fullUrl}`, errorText);
             // Tenta fazer o parse do erro, se for JSON, senão usa o texto.
+            let parsedMessage = '';
             try {
-                const errorJson = JSON.parse(errorText);
-                throw new Error(errorJson.message || `Erro na API do n8n: ${response.statusText}`); // --- Lança o erro ---
-            } catch (e) {
-                throw new Error(`Erro na API do n8n: ${response.statusText}`); // --- Lança o erro ---
-            }
+                const errorJson = JSON.parse(errorText || '{}');
+                parsedMessage = errorJson.message || errorJson.error || '';
+            } catch (_) {}
+            const composed = `[${response.status}] ${response.statusText}${parsedMessage ? ` - ${parsedMessage}` : ''}${errorText && !parsedMessage ? ` - ${errorText.substring(0, 300)}` : ''}`;
+            throw new Error(`Erro na API do n8n: ${composed}`);
         }
         
         // --- Retorna o JSON apenas se o corpo da resposta não estiver vazio ---
@@ -223,12 +224,23 @@ class N8nAPI {
         return results;
     }
 
-    // --- Cria um workflow ---
+    // --- Cria um workflow (com fallback /rest) ---
     async createWorkflow(workflowData) {
-        return this._fetch('/api/v1/workflows', {
-            method: 'POST',
-            body: JSON.stringify(workflowData),
-        });
+        try {
+            return await this._fetch('/api/v1/workflows', {
+                method: 'POST',
+                body: JSON.stringify(workflowData),
+            });
+        } catch (error) {
+            if (error.message.includes('Not Found') || error.message.includes('404') || error.message.includes('405')) {
+                console.warn('⚠️ createWorkflow via /api/v1 falhou. Tentando /rest/workflows...');
+                return await this._fetch('/rest/workflows', {
+                    method: 'POST',
+                    body: JSON.stringify(workflowData),
+                });
+            }
+            throw error;
+        }
     }
 
     // --- Obtém todos os workflows (com fallback para /rest) ---

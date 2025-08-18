@@ -120,10 +120,26 @@ class Database {
                     staticData JSON,
                     tags JSON,
                     triggerCount INT DEFAULT 0,
+                    owner_user_id INT NULL,
                     updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             `);
+
+      // Garantir coluna owner_user_id em bancos existentes (migração leve)
+      try {
+        const [cols] = await this.pool.execute(
+          `SELECT COUNT(*) AS cnt
+           FROM INFORMATION_SCHEMA.COLUMNS 
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflows' AND COLUMN_NAME = 'owner_user_id'`
+        );
+        if (!cols[0] || cols[0].cnt === 0) {
+          await this.pool.execute(`ALTER TABLE workflows ADD COLUMN owner_user_id INT NULL`);
+          console.log("🛠️ Coluna owner_user_id adicionada à tabela workflows");
+        }
+      } catch (migErr) {
+        console.warn("⚠️ Não foi possível verificar/adicionar coluna owner_user_id:", migErr.message);
+      }
       // --- Cria a tabela de agents ---
       await this.connection.execute(`
                 CREATE TABLE IF NOT EXISTS agents (
@@ -186,8 +202,25 @@ class Database {
                 )
             `);
 
+      // --- Cria a tabela de logs de execução ---
+      await this.connection.execute(`
+                CREATE TABLE IF NOT EXISTS execution_logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL,
+                    prompt TEXT NOT NULL,
+                    workflow_id VARCHAR(255),
+                    workflow_name VARCHAR(255),
+                    status ENUM('success', 'error', 'paused') NOT NULL,
+                    error_message TEXT,
+                    detailed_logs JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_user_id (user_id),
+                    INDEX idx_status (status)
+                )
+            `);
+
       console.log(
-        "✅ Tabelas 'workflows', 'agents', 'credentials', 'clients' e 'n8n_configs' verificadas/criadas com sucesso."
+        "✅ Tabelas 'workflows', 'agents', 'credentials', 'clients', 'n8n_configs' e 'execution_logs' verificadas/criadas com sucesso."
       );
     } catch (error) {
       console.error("❌ Erro ao criar as tabelas:", error);
@@ -205,7 +238,7 @@ class Database {
 
     // --- Cria a query para sincronizar os workflows ---
     const query = `
-            INSERT INTO workflows (id, name, active, nodes, connections, settings, staticData, tags, triggerCount, createdAt, updatedAt)
+            INSERT INTO workflows (id, name, active, nodes, connections, settings, staticData, tags, triggerCount, owner_user_id, createdAt, updatedAt)
             VALUES ?
             ON DUPLICATE KEY UPDATE
             name = VALUES(name),
@@ -216,6 +249,7 @@ class Database {
             staticData = VALUES(staticData),
             tags = VALUES(tags),
             triggerCount = VALUES(triggerCount),
+            owner_user_id = VALUES(owner_user_id),
             updatedAt = VALUES(updatedAt)
         `;
     // --- Cria os valores para a query ---
@@ -229,6 +263,8 @@ class Database {
       JSON.stringify(wf.staticData ?? null),
       JSON.stringify(wf.tags ?? null),
       wf.triggerCount ?? 0,
+      // meta.ownerUserId, se existir no workflow vindo do n8n
+      (wf.meta && (wf.meta.ownerUserId || wf.meta.owner_user_id)) || null,
       wf.createdAt ? new Date(wf.createdAt) : new Date(),
       wf.updatedAt ? new Date(wf.updatedAt) : new Date(),
     ]);
@@ -295,15 +331,25 @@ class Database {
     }
   }
 
-  async getWorkflows() {
-    // --- Obtém todos os workflows ---
-    // --- Cria a query para obter todos os workflows ---
+  async getWorkflows(userId = null) {
+    // Lista workflows; se userId for informado, filtra estritamente por proprietário
+    if (userId) {
+      const [rows] = await this.pool.execute(
+        `SELECT w.*, COUNT(a.id) as agent_count
+         FROM workflows w
+         LEFT JOIN agents a ON w.id = a.workflow_id
+         WHERE w.owner_user_id = ?
+         GROUP BY w.id`,
+        [userId]
+      );
+      return rows;
+    }
     const [rows] = await this.pool.execute(`
            SELECT w.*, COUNT(a.id) as agent_count
            FROM workflows w LEFT JOIN agents a ON w.id = a.workflow_id
            GROUP BY w.id
        `);
-    return rows; // --- Retorna os workflows ---
+    return rows;
   }
 
   async getWorkflowWithAgents(workflowId) {
